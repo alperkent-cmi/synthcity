@@ -1,4 +1,5 @@
 # stdlib
+import json
 import math
 from copy import copy, deepcopy
 from pathlib import Path
@@ -7,6 +8,7 @@ from typing import Any, Dict, Optional
 # third party
 import numpy as np
 import pandas as pd
+import torch
 from pydantic import validate_arguments
 from typing_extensions import Literal
 
@@ -18,12 +20,19 @@ from synthcity.plugins.core.dataloader import DataLoader
 def get_json_serializable_kwargs(kwargs: Dict) -> Dict:
     """
     This function should take the kwargs for Benchmarks.evaluate and makes them serializable with json.dumps.
-    Currently it only handles pathlib.Path -> str.
+    Handles pathlib.Path and torch.device explicitly (-> str), and falls back to str()
+    for any other value that isn't natively JSON-serializable (e.g. arbitrary plugin
+    kwargs such as device objects passed for pydantic-v2 plugins).
     """
     serializable_kwargs = deepcopy(kwargs)
     for k, v in serializable_kwargs.items():
-        if isinstance(v, Path):
-            serializable_kwargs[k] = str(serializable_kwargs[k])
+        if isinstance(v, (Path, torch.device)):
+            serializable_kwargs[k] = str(v)
+        else:
+            try:
+                json.dumps(v)
+            except TypeError:
+                serializable_kwargs[k] = str(v)
     return serializable_kwargs
 
 
