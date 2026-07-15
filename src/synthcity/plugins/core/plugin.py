@@ -609,17 +609,17 @@ class PluginLoader:
                     spec.loader.exec_module(mod)
                 cls = mod.plugin
                 if cls is None:
-                    log.critical(f"module disabled: {plugin_name}")
+                    log.debug(f"module disabled: {plugin_name}")
                     return None
 
                 failed = False
                 break
             except BaseException as e:
-                log.critical(f"load failed: {e}")
+                log.debug(f"load failed: {e}")
                 failed = True
 
         if failed:
-            log.critical(f"module {name} load failed")
+            log.debug(f"module {name} load failed")
             return None
 
         return cls

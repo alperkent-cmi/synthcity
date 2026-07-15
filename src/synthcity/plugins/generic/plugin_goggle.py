@@ -35,7 +35,7 @@ try:
     module_disabled = False
 except ImportError as e:
     module_disabled = True
-    log.critical(f"Error importing TabularGoggle: {e}")
+    log.debug(f"Error importing TabularGoggle: {e}")
 
 
 class GOGGLEPlugin(Plugin):
