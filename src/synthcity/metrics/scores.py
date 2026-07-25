@@ -1,14 +1,12 @@
 # stdlib
-import multiprocessing
 import time
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 # third party
 import numpy as np
 import pandas as pd
-import torch
-from joblib import Parallel, delayed
 from scipy.stats import iqr
+from tqdm import tqdm
 
 # synthcity absolute
 import synthcity.logger as log
@@ -16,17 +14,12 @@ import synthcity.logger as log
 # synthcity relative
 from .core.metric import MetricEvaluator
 
-n_jobs = torch.cuda.device_count()
-if n_jobs == 0:
-    n_jobs = multiprocessing.cpu_count()
-dispatcher = Parallel(n_jobs=1)
-
 
 def _safe_evaluate(
     evaluator: MetricEvaluator,
     *args: Any,
     **kwargs: Any,
-) -> Tuple[str, Dict, bool, float, str]:
+) -> Tuple[str, Dict, bool, float, str, Optional[str]]:
     start = time.time()
     log.debug(f" >> Evaluating metric {evaluator.fqdn()}")
     failed = False
@@ -44,7 +37,7 @@ def _safe_evaluate(
     if err is not None:
         log.error(f" >> Evaluator {evaluator.fqdn()} failed: {err}")
 
-    return evaluator.fqdn(), result, failed, duration, evaluator.direction()
+    return evaluator.fqdn(), result, failed, duration, evaluator.direction(), err
 
 
 class ScoreEvaluator:
@@ -81,10 +74,25 @@ class ScoreEvaluator:
         self.pending_tasks.append((evaluator, args, kwargs))
 
     def compute(self) -> None:
-        results = dispatcher(
-            delayed(_safe_evaluate)(evaluator, *args, **kwargs)
-            for (evaluator, args, kwargs) in self.pending_tasks
-        )
+        # Metrics previously ran via `joblib.Parallel(n_jobs=1)`, which is
+        # sequential in this process anyway -- iterate directly (instead of
+        # hiding the loop inside joblib's generator dispatch) so a tqdm bar
+        # can show which metric is currently running. Without this there is
+        # no way to tell a merely-slow metric (e.g. DomiasMIA*, which can
+        # take minutes) from a genuinely hung one. Mirrors the per-metric
+        # progress bar added to the syntheval fork (`SynthEval.evaluate()`).
+        pbar = tqdm(self.pending_tasks, desc="synthcity metrics", unit="metric")
+        results = []
+        for evaluator, args, kwargs in pbar:
+            pbar.set_postfix_str(evaluator.fqdn(), refresh=True)
+            key, result, failed, duration, direction, err = _safe_evaluate(
+                evaluator, *args, **kwargs
+            )
+            if failed:
+                pbar.write(
+                    f"[synthcity] '{key}' failed after {duration:.1f}s: {err}"
+                )
+            results.append((key, result, failed, duration, direction))
         self.pending_tasks = []
 
         for key, result, failed, duration, direction in results:
