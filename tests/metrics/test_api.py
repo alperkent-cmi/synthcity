@@ -53,8 +53,36 @@ def test_list() -> None:
             "sanity",
             "detection",
             "performance",
+            "attack",
         ]
     )
+    assert set(Metrics.list()["attack"]) == {
+        "data_leakage_mlp",
+        "data_leakage_xgb",
+        "data_leakage_linear",
+    }
+
+
+def test_attack_metric_filter(tmp_path) -> None:
+    X = pd.DataFrame(
+        {
+            "feature": list(range(20)),
+            "sex": [0, 1] * 10,
+            "target": [0, 1] * 10,
+        }
+    )
+
+    Xraw = GenericDataLoader(X, target_column="target", sensitive_features=["sex"])
+
+    out = Metrics.evaluate(
+        Xraw,
+        Xraw,
+        metrics={"attack": ["data_leakage_linear"]},
+        workspace=tmp_path,
+        use_cache=False,
+    )
+
+    assert any(index.startswith("attack.data_leakage_linear") for index in out.index)
 
 
 @pytest.mark.parametrize(

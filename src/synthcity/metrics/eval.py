@@ -14,6 +14,7 @@ from synthcity.plugins.core.dataloader import (
 )
 
 # synthcity relative
+from .eval_attacks import DataLeakageLinear, DataLeakageMLP, DataLeakageXGB
 from .eval_detection import (
     SyntheticDetectionGMM,
     SyntheticDetectionLinear,
@@ -100,6 +101,10 @@ standard_metrics = [
     DomiasMIABNAF,  # TODO: This takes too long to include as default
     DomiasMIAKDE,
     DomiasMIAPrior,
+    # attribute-inference attack tests
+    DataLeakageLinear,
+    DataLeakageMLP,
+    DataLeakageXGB,
 ]
 
 
@@ -141,7 +146,8 @@ class Metrics:
                 'stats': ['jensenshannon_dist', 'chi_squared_test', 'feature_corr', 'inv_kl_divergence', 'ks_test', 'max_mean_discrepancy', 'wasserstein_dist', 'prdc', 'alpha_precision', 'survival_km_distance'],
                 'performance': ['linear_model', 'mlp', 'xgb', 'feat_rank_distance'],
                 'detection': ['detection_xgb', 'detection_mlp', 'detection_gmm', 'detection_linear'],
-                'privacy': ['delta-presence', 'k-anonymization', 'k-map', 'distinct l-diversity', 'identifiability_score']
+                'privacy': ['delta-presence', 'k-anonymization', 'k-map', 'distinct l-diversity', 'identifiability_score'],
+                'attack': ['data_leakage_linear', 'data_leakage_mlp', 'data_leakage_xgb']
             }
         reduction: str
             The way to aggregate metrics across folds. Can be: 'mean', "min", or "max".
