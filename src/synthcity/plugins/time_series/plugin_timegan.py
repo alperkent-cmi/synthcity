@@ -333,7 +333,13 @@ class TimeGANPlugin(Plugin):
             use_horizon_condition=self.use_horizon_condition,
             dataloader_sampler=sampler,
         )
-        self.cov_model.fit(static, temporal, observation_times, cond=cond)
+        self.cov_model.fit(
+            static,
+            temporal,
+            observation_times,
+            cond=cond,
+            groups=X.group_ids,
+        )
 
         # Outcome generation
         self.outcome_encoder.fit(outcome)
@@ -370,6 +376,7 @@ class TimeGANPlugin(Plugin):
             np.asarray(temporal),
             np.asarray(observation_times),
             np.asarray(outcome_enc),
+            groups=X.group_ids,
         )
 
         return self

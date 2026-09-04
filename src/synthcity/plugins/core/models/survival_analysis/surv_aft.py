@@ -22,7 +22,7 @@ class WeibullAFTSurvivalAnalysis(SurvivalAnalysisPlugin):
 
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
     def fit(
-        self, X: pd.DataFrame, T: pd.Series, Y: pd.Series
+        self, X: pd.DataFrame, T: pd.Series, Y: pd.Series, groups: Any = None
     ) -> "SurvivalAnalysisPlugin":
         "Training logic"
 

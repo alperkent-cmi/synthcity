@@ -165,6 +165,138 @@ def test_evaluate_avg_jensenshannon_distance(test_plugin: Plugin) -> None:
     assert JensenShannonDistance.direction() == "minimize"
 
 
+def test_jensen_shannon_uses_declared_semantics_and_shared_support() -> None:
+    real = GenericDataLoader(
+        pd.DataFrame(
+            {
+                "category": ["a", "b", "a", "b"],
+                "measurement": [0.0, 1.0, 2.0, 1.0],
+                "measurement_2": [0.0, 1.0, 2.0, 1.0],
+            }
+        ),
+        feature_types={
+            "category": "categorical",
+            "measurement": "continuous",
+            "measurement_2": "continuous",
+        },
+        source_table={
+            "category": "demographics",
+            "measurement": "labs",
+            "measurement_2": "labs",
+        },
+    )
+    synthetic = GenericDataLoader(
+        pd.DataFrame(
+            {
+                "category": ["a", "c", "a", "c"],
+                "measurement": [0.0, 2.0, 3.0, 4.0],
+                "measurement_2": [0.0, 0.0, 0.0, 0.0],
+            }
+        ),
+        feature_types={
+            "category": "categorical",
+            "measurement": "continuous",
+            "measurement_2": "continuous",
+        },
+        source_table={
+            "category": "demographics",
+            "measurement": "labs",
+            "measurement_2": "labs",
+        },
+    )
+
+    evaluator = JensenShannonDistance(n_histogram_bins=2, use_cache=False)
+    results = evaluator._evaluate(real, synthetic)
+    metadata = evaluator.result_metadata()
+
+    assert results["marginal"] >= 0
+    assert results["variable_v2.category"] > 0
+    assert results["variable_v2.measurement"] > 0
+    assert results["variable_v2.measurement_2"] > 0
+    labs_mean = (
+        results["variable_v2.measurement"] + results["variable_v2.measurement_2"]
+    ) / 2
+    assert results["source_table_macro_v2"] == pytest.approx(
+        (results["variable_v2.category"] + labs_mean) / 2
+    )
+    assert results["max_variable_v2"] == pytest.approx(
+        max(
+            results["variable_v2.category"],
+            results["variable_v2.measurement"],
+            results["variable_v2.measurement_2"],
+        )
+    )
+    assert metadata["version"] == "jsd_v2"
+    assert metadata["variables"]["category"]["feature_type"] == "categorical"
+    assert metadata["variables"]["category"]["source_table"] == "demographics"
+    assert {item["repr"] for item in metadata["variables"]["category"]["support"]} == {
+        "'a'",
+        "'b'",
+        "'c'",
+    }
+    assert metadata["variables"]["measurement"]["bin_edges"][-1] == 4.0
+    assert metadata["aggregation_contract"]["schema_version"] == "source-table-aggregation-v1"
+    assert metadata["aggregation_contract"]["source_table_macro_v2"]["source_tables"] == {
+        "demographics": {
+            "variables": ["category"],
+            "n_variables": 1,
+            "mean_distance": results["variable_v2.category"],
+        },
+        "labs": {
+            "variables": ["measurement", "measurement_2"],
+            "n_variables": 2,
+            "mean_distance": labs_mean,
+        },
+    }
+
+
+def test_jensen_shannon_cache_retains_source_table_metadata(tmp_path) -> None:
+    real = GenericDataLoader(
+        pd.DataFrame({"value": [0.0, 1.0, 2.0]}),
+        feature_types={"value": "continuous"},
+        source_table={"value": "labs"},
+    )
+    synthetic = GenericDataLoader(
+        pd.DataFrame({"value": [0.0, 2.0, 3.0]}),
+        feature_types={"value": "continuous"},
+        source_table={"value": "labs"},
+    )
+
+    first_evaluator = JensenShannonDistance(workspace=tmp_path)
+    first = first_evaluator.evaluate(real, synthetic)
+    second_evaluator = JensenShannonDistance(workspace=tmp_path)
+    second = second_evaluator.evaluate(real, synthetic)
+
+    assert second == first
+    assert second_evaluator.result_metadata()["variables"]["value"]["source_table"] == "labs"
+    assert (
+        second_evaluator.result_metadata()["aggregation_contract"]["schema_version"]
+        == "source-table-aggregation-v1"
+    )
+
+
+def test_jensen_shannon_cache_is_namespaced_by_semantic_settings(tmp_path) -> None:
+    real = GenericDataLoader(pd.DataFrame({"value": [0, 1, 2]}))
+    synthetic = GenericDataLoader(pd.DataFrame({"value": [0, 2, 3]}))
+
+    JensenShannonDistance(
+        workspace=tmp_path,
+        feature_types={"value": "continuous"},
+        source_table={"value": "labs"},
+    ).evaluate(real, synthetic)
+    second_evaluator = JensenShannonDistance(
+        workspace=tmp_path,
+        feature_types={"value": "categorical"},
+        source_table={"value": "survey"},
+    )
+    second_evaluator.evaluate(real, synthetic)
+
+    metadata = second_evaluator.result_metadata()
+    assert metadata["variables"]["value"]["feature_type"] == "categorical"
+    assert metadata["variables"]["value"]["source_table"] == "survey"
+    assert len(list(tmp_path.glob("sc_metric_cache_stats_jensenshannon_dist*"))) == 2
+
+
 @pytest.mark.parametrize("test_plugin", [Plugins().get("dummy_sampler")])
 def test_evaluate_wasserstein_distance(test_plugin: Plugin) -> None:
     X, y = load_iris(return_X_y=True, as_frame=True)

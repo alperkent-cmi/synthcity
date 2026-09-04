@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 import pandas as pd
 import torch
-from pydantic import validate_arguments
+from pydantic import validate_call
 from typing_extensions import Literal
 
 # synthcity absolute
@@ -109,7 +109,7 @@ def calculate_fair_aug_sample_size(
     return augmentation_counts
 
 
-@validate_arguments(config=dict(arbitrary_types_allowed=True))
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def _generate_synthetic_data(
     X_train: DataLoader,
     augment_generator: Any,
@@ -139,6 +139,9 @@ def _generate_synthetic_data(
         rule,
         ad_hoc_augment_vals=ad_hoc_augment_vals,
     )
+    group_generation_kwargs = {}
+    if "_group_namespace" in generate_kwargs:
+        group_generation_kwargs["_group_namespace"] = generate_kwargs["_group_namespace"]
     if not strict:
         # set count equal to the total number of records required according to calculate_fair_aug_sample_size
         count = sum(augmentation_counts.values())
@@ -162,14 +165,16 @@ def _generate_synthetic_data(
                 )
                 syn_data_list.append(
                     augment_generator.generate(
-                        count=count, constraints=constraints
+                        count=count,
+                        constraints=constraints,
+                        **group_generation_kwargs,
                     ).dataframe()
                 )
         syn_data = pd.concat(syn_data_list)
     return syn_data
 
 
-@validate_arguments(config=dict(arbitrary_types_allowed=True))
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def augment_data(
     X_train: DataLoader,
     augment_generator: Any,
@@ -206,10 +211,19 @@ def augment_data(
 
     augmented_data_loader = copy(X_train)
     augmented_data_loader.data = pd.concat(
-        [
-            X_train.data,
-            syn_data,
-        ]
+        [X_train.data, syn_data],
+        ignore_index=True,
     )
+    if X_train.group_ids is not None:
+        generated_group_ids = np.asarray(
+            [
+                f"__synthcity_generated__augmented__{row_index}"
+                for row_index in range(len(syn_data))
+            ],
+            dtype=object,
+        )
+        augmented_data_loader.group_ids = np.concatenate(
+            [np.asarray(X_train.group_ids, dtype=object), generated_group_ids]
+        )
 
     return augmented_data_loader

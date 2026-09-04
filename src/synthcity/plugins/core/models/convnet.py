@@ -12,6 +12,7 @@ from torch import nn
 # synthcity absolute
 import synthcity.logger as log
 from synthcity.utils.constants import DEVICE
+from synthcity.utils.evaluation import train_test_indices
 from synthcity.utils.reproducibility import enable_reproducible_results
 
 
@@ -120,12 +121,24 @@ class ConvNet(nn.Module):
         else:
             self.loss = nn.MSELoss()
 
-    def fit(self, X: torch.utils.data.Dataset) -> "ConvNet":
-        train_size = int(0.8 * len(X))
-        test_size = len(X) - train_size
-        train_dataset, test_dataset = torch.utils.data.random_split(
-            X, [train_size, test_size]
-        )
+    def fit(
+        self, X: torch.utils.data.Dataset, groups: Any = None
+    ) -> "ConvNet":
+        if groups is None:
+            train_size = int(0.8 * len(X))
+            test_size = len(X) - train_size
+            train_dataset, test_dataset = torch.utils.data.random_split(
+                X, [train_size, test_size]
+            )
+        else:
+            train_idx, test_idx = train_test_indices(
+                len(X),
+                train_size=0.8,
+                seed=self.random_state,
+                groups=groups,
+            )
+            train_dataset = torch.utils.data.Subset(X, train_idx.tolist())
+            test_dataset = torch.utils.data.Subset(X, test_idx.tolist())
         train_loader = torch.utils.data.DataLoader(
             train_dataset, batch_size=self.batch_size, pin_memory=False
         )

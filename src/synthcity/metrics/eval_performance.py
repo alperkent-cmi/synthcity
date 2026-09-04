@@ -9,12 +9,13 @@ import pandas as pd
 import shap
 import torch
 from pydantic import validate_arguments
+from shap.utils._exceptions import ExplainerError
 from scipy.stats import kendalltau, spearmanr
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.metrics import r2_score
-from sklearn.model_selection import KFold, StratifiedKFold
 from sklearn.preprocessing import LabelEncoder
 from xgboost import XGBClassifier, XGBRegressor
+from xgboost.core import XGBoostError
 
 # synthcity absolute
 import synthcity.logger as log
@@ -43,6 +44,13 @@ from synthcity.plugins.core.models.time_series_survival.ts_surv_xgb import (
 )
 from synthcity.plugins.core.models.ts_model import TimeSeriesModel
 from synthcity.utils.serialization import load_from_file, save_to_file
+
+FEATURE_IMPORTANCE_RESULT_VERSION = "rank-v3"
+FEATURE_IMPORTANCE_CACHE_SCHEMA_VERSION = "feature-importance-result-v1"
+
+
+class FeatureImportanceRankDistanceError(RuntimeError):
+    pass
 
 
 class PerformanceEvaluator(MetricEvaluator):
@@ -78,6 +86,7 @@ class PerformanceEvaluator(MetricEvaluator):
         y_train: np.ndarray,
         X_test: np.ndarray,
         y_test: np.ndarray,
+        fit_groups: Any = None,
     ) -> float:
         """
         Evaluate a classification task.
@@ -108,14 +117,19 @@ class PerformanceEvaluator(MetricEvaluator):
             model_args["n_units_out"] = len(np.unique(y_train))
         try:
             enc_y_test = encoder.transform(y_test)
-            estimator = model(**model_args).fit(X_train, enc_y_train)
+            estimator = model(**model_args)
+            if fit_groups is not None and isinstance(estimator, MLP):
+                estimator.fit(X_train, enc_y_train, groups=fit_groups)
+            else:
+                estimator.fit(X_train, enc_y_train)
             y_pred = estimator.predict_proba(X_test)
             score, _ = evaluate_auc(enc_y_test, y_pred)
-        except BaseException as e:
-            log.error(f"classifier evaluation failed {e}.")
-            score = 0
+        except (TypeError, ValueError, RuntimeError) as exc:
+            raise RuntimeError(
+                f"Classifier performance evaluation failed for {model.__name__}: {exc}"
+            ) from exc
 
-        return score
+        return float(score)
 
     def _evaluate_performance_regression(
         self,
@@ -125,6 +139,7 @@ class PerformanceEvaluator(MetricEvaluator):
         y_train: np.ndarray,
         X_test: np.ndarray,
         y_test: np.ndarray,
+        fit_groups: Any = None,
     ) -> float:
         """
         Evaluate a regression task.
@@ -140,15 +155,20 @@ class PerformanceEvaluator(MetricEvaluator):
         y_test = np.asarray(y_test)
 
         try:
-            estimator = model(**model_args).fit(X_train, y_train)
+            estimator = model(**model_args)
+            if fit_groups is not None and isinstance(estimator, MLP):
+                estimator.fit(X_train, y_train, groups=fit_groups)
+            else:
+                estimator.fit(X_train, y_train)
             y_pred = estimator.predict(X_test)
 
             score = r2_score(y_test, y_pred)
-        except BaseException as e:
-            log.error(f"regression evaluation failed {e}")
-            score = -1
+        except (TypeError, ValueError, RuntimeError) as exc:
+            raise RuntimeError(
+                f"Regression performance evaluation failed for {model.__name__}: {exc}"
+            ) from exc
 
-        return score
+        return float(score)
 
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
     def _evaluate_standard_performance(
@@ -173,39 +193,67 @@ class PerformanceEvaluator(MetricEvaluator):
         if self.use_cache(cache_file):
             return load_from_file(cache_file)
 
-        id_X_gt, id_y_gt = X_gt.train().unpack()
+        id_gt_loader = X_gt.train()
+        id_X_gt, id_y_gt = id_gt_loader.unpack()
         ood_X_gt, ood_y_gt = X_gt.test().unpack()
         iter_X_syn, iter_y_syn = X_syn.unpack()
+        synthetic_groups = X_syn.group_ids
 
         if self._task_type == "classification":
             eval_cbk = self._evaluate_performance_classification
-            skf = StratifiedKFold(
-                n_splits=self._n_folds, shuffle=True, random_state=self._random_state
+            cv_splits = id_gt_loader.cv_splits(
+                y=id_y_gt,
+                n_splits=self._n_folds,
+                stratified=True,
             )
         elif self._task_type == "regression":
             eval_cbk = self._evaluate_performance_regression
-            skf = KFold(
-                n_splits=self._n_folds, shuffle=True, random_state=self._random_state
+            cv_splits = id_gt_loader.cv_splits(
+                n_splits=self._n_folds,
+                stratified=False,
             )
 
         real_scores = []
         syn_scores_id = []
         syn_scores_ood = []
 
-        for train_idx, test_idx in skf.split(id_X_gt, id_y_gt):
+        for train_idx, test_idx in cv_splits:
             train_data = np.asarray(id_X_gt.loc[train_idx])
             test_data = np.asarray(id_X_gt.loc[test_idx])
             train_labels = np.asarray(id_y_gt.loc[train_idx])
             test_labels = np.asarray(id_y_gt.loc[test_idx])
+            train_groups = (
+                None
+                if id_gt_loader.group_ids is None
+                else id_gt_loader.group_ids[train_idx]
+            )
 
             real_score = eval_cbk(
-                model, model_args, train_data, train_labels, test_data, test_labels
+                model,
+                model_args,
+                train_data,
+                train_labels,
+                test_data,
+                test_labels,
+                fit_groups=train_groups,
             )
             synth_score_id = eval_cbk(
-                model, model_args, iter_X_syn, iter_y_syn, test_data, test_labels
+                model,
+                model_args,
+                iter_X_syn,
+                iter_y_syn,
+                test_data,
+                test_labels,
+                fit_groups=synthetic_groups,
             )
             synth_score_ood = eval_cbk(
-                model, model_args, iter_X_syn, iter_y_syn, ood_X_gt, ood_y_gt
+                model,
+                model_args,
+                iter_X_syn,
+                iter_y_syn,
+                ood_X_gt,
+                ood_y_gt,
+                fit_groups=synthetic_groups,
             )
 
             real_scores.append(real_score)
@@ -258,9 +306,12 @@ class PerformanceEvaluator(MetricEvaluator):
         info = X_gt.info()
         time_horizons = info["time_horizons"]
 
-        id_X_gt, id_T_gt, id_E_gt = X_gt.train().unpack()
-        ood_X_gt, ood_T_gt, ood_E_gt = X_gt.test().unpack()
+        id_gt_loader = X_gt.train()
+        ood_gt_loader = X_gt.test()
+        id_X_gt, id_T_gt, id_E_gt = id_gt_loader.unpack()
+        ood_X_gt, ood_T_gt, ood_E_gt = ood_gt_loader.unpack()
         iter_X_syn, iter_T_syn, iter_E_syn = X_syn.unpack()
+        synthetic_groups = X_syn.group_ids
 
         predictor_gt = model(**args)
         log.info(
@@ -274,18 +325,20 @@ class PerformanceEvaluator(MetricEvaluator):
             metrics=["c_index", "brier_score"],
             n_folds=self._n_folds,
             time_horizons=time_horizons,
+            groups=id_gt_loader.group_ids,
         )["clf"]
 
         log.info(f"Baseline performance score: {score_gt}")
 
         predictor_syn = model(**args)
 
-        fail_score = {
-            "c_index": (0, 0),
-            "brier_score": (1, 0),
-        }
         try:
-            predictor_syn.fit(iter_X_syn, iter_T_syn, iter_E_syn)
+            predictor_syn.fit(
+                iter_X_syn,
+                iter_T_syn,
+                iter_E_syn,
+                groups=synthetic_groups,
+            )
             score_syn_id = evaluate_survival_model(
                 [predictor_syn] * self._n_folds,
                 id_X_gt,
@@ -295,17 +348,22 @@ class PerformanceEvaluator(MetricEvaluator):
                 n_folds=self._n_folds,
                 time_horizons=time_horizons,
                 pretrained=True,
+                groups=id_gt_loader.group_ids,
             )["clf"]
-        except BaseException as e:
-            log.error(
-                f"Failed to evaluate synthetic ID performance. {model.name()}: {e}"
-            )
-            score_syn_id = fail_score
+        except (TypeError, ValueError, RuntimeError) as exc:
+            raise RuntimeError(
+                f"Failed to evaluate synthetic ID performance for {model.name()}: {exc}"
+            ) from exc
 
         log.info(f"Synthetic ID performance score: {score_syn_id}")
 
         try:
-            predictor_syn.fit(iter_X_syn, iter_T_syn, iter_E_syn)
+            predictor_syn.fit(
+                iter_X_syn,
+                iter_T_syn,
+                iter_E_syn,
+                groups=synthetic_groups,
+            )
             score_syn_ood = evaluate_survival_model(
                 [predictor_syn] * self._n_folds,
                 ood_X_gt,
@@ -315,12 +373,12 @@ class PerformanceEvaluator(MetricEvaluator):
                 n_folds=self._n_folds,
                 time_horizons=time_horizons,
                 pretrained=True,
+                groups=ood_gt_loader.group_ids,
             )["clf"]
-        except BaseException as e:
-            log.error(
-                f"Failed to evaluate synthetic OOD performance. {model.name()}: {e}"
-            )
-            score_syn_ood = fail_score
+        except (TypeError, ValueError, RuntimeError) as exc:
+            raise RuntimeError(
+                f"Failed to evaluate synthetic OOD performance for {model.name()}: {exc}"
+            ) from exc
 
         log.info(f"Synthetic OOD performance score: {score_syn_ood}")
 
@@ -365,24 +423,28 @@ class PerformanceEvaluator(MetricEvaluator):
         if self.use_cache(cache_file):
             return load_from_file(cache_file)
 
+        id_gt_loader = X_gt.train()
+        ood_gt_loader = X_gt.test()
         (
             id_static_gt,
             id_temporal_gt,
             id_observation_times_gt,
             id_outcome_gt,
-        ) = X_gt.train().unpack(as_numpy=True)
+        ) = id_gt_loader.unpack(as_numpy=True)
         (
             ood_static_gt,
             ood_temporal_gt,
             ood_observation_times_gt,
             ood_outcome_gt,
-        ) = X_gt.test().unpack(as_numpy=True)
+        ) = ood_gt_loader.unpack(as_numpy=True)
         static_syn, temporal_syn, observation_times_syn, outcome_syn = X_syn.unpack(
             as_numpy=True
         )
+        synthetic_groups = X_syn.group_ids
 
-        skf = KFold(
-            n_splits=self._n_folds, shuffle=True, random_state=self._random_state
+        cv_splits = id_gt_loader.cv_splits(
+            n_splits=self._n_folds,
+            stratified=False,
         )
 
         real_scores = []
@@ -398,23 +460,29 @@ class PerformanceEvaluator(MetricEvaluator):
             temporal_test: np.ndarray,
             observation_times_test: np.ndarray,
             outcome_test: np.ndarray,
+            fit_groups: Any = None,
         ) -> float:
             try:
                 estimator = model(**model_args).fit(
-                    static_train, temporal_train, observation_times_train, outcome_train
+                    static_train,
+                    temporal_train,
+                    observation_times_train,
+                    outcome_train,
+                    groups=fit_groups,
                 )
                 preds = estimator.predict(
                     static_test, temporal_test, observation_times_test
                 )
 
                 score = r2_score(outcome_test, preds)
-            except BaseException as e:
-                log.error(f"regression evaluation failed {e}")
-                score = -1
+            except (TypeError, ValueError, RuntimeError) as exc:
+                raise RuntimeError(
+                    f"Time-series performance evaluation failed for {model.__name__}: {exc}"
+                ) from exc
 
-            return score
+            return float(score)
 
-        for train_idx, test_idx in skf.split(id_static_gt):
+        for train_idx, test_idx in cv_splits:
             static_train_data = id_static_gt[train_idx]
             temporal_train_data = id_temporal_gt[train_idx]
             observation_times_train_data = id_observation_times_gt[train_idx]
@@ -423,6 +491,11 @@ class PerformanceEvaluator(MetricEvaluator):
             temporal_test_data = id_temporal_gt[test_idx]
             observation_times_test_data = id_observation_times_gt[test_idx]
             outcome_test_data = id_outcome_gt[test_idx]
+            train_groups = (
+                None
+                if id_gt_loader.group_ids is None
+                else id_gt_loader.group_ids[train_idx]
+            )
             real_score = ts_eval_cbk(
                 static_train_data,
                 temporal_train_data,
@@ -432,6 +505,7 @@ class PerformanceEvaluator(MetricEvaluator):
                 temporal_test_data,
                 observation_times_test_data,
                 outcome_test_data,
+                fit_groups=train_groups,
             )
             synth_score_id = ts_eval_cbk(
                 static_syn,
@@ -442,6 +516,7 @@ class PerformanceEvaluator(MetricEvaluator):
                 temporal_test_data,
                 observation_times_test_data,
                 outcome_test_data,
+                fit_groups=synthetic_groups,
             )
             synth_score_ood = ts_eval_cbk(
                 static_syn,
@@ -452,6 +527,7 @@ class PerformanceEvaluator(MetricEvaluator):
                 ood_temporal_gt,
                 ood_observation_times_gt,
                 ood_outcome_gt,
+                fit_groups=synthetic_groups,
             )
 
             real_scores.append(real_score)
@@ -499,20 +575,22 @@ class PerformanceEvaluator(MetricEvaluator):
         info = X_gt.info()
         time_horizons = info["time_horizons"]
 
+        id_gt_loader = X_gt.train()
+        ood_gt_loader = X_gt.test()
         (
             id_X_static_gt,
             id_X_temporal_gt,
             id_X_observation_times_gt,
             id_T_gt,
             id_E_gt,
-        ) = X_gt.train().unpack(as_numpy=True)
+        ) = id_gt_loader.unpack(as_numpy=True)
         (
             ood_X_static_gt,
             ood_X_temporal_gt,
             ood_X_observation_times_gt,
             ood_T_gt,
             ood_E_gt,
-        ) = X_gt.test().unpack(as_numpy=True)
+        ) = ood_gt_loader.unpack(as_numpy=True)
         (
             iter_X_static_syn,
             iter_X_temporal_syn,
@@ -520,6 +598,7 @@ class PerformanceEvaluator(MetricEvaluator):
             iter_T_syn,
             iter_E_syn,
         ) = X_syn.unpack(as_numpy=True)
+        synthetic_groups = X_syn.group_ids
 
         predictor_gt = model(**args)
         log.info(
@@ -535,16 +614,13 @@ class PerformanceEvaluator(MetricEvaluator):
             metrics=["c_index", "brier_score"],
             n_folds=self._n_folds,
             time_horizons=time_horizons,
+            groups=id_gt_loader.group_ids,
         )["clf"]
 
         log.info(f"Baseline performance score: {score_gt}")
 
         predictor_syn = model(**args)
 
-        fail_score = {
-            "c_index": (0, 0),
-            "brier_score": (1, 0),
-        }
         try:
             predictor_syn.fit(
                 iter_X_static_syn,
@@ -552,6 +628,7 @@ class PerformanceEvaluator(MetricEvaluator):
                 iter_X_observation_times_syn,
                 iter_T_syn,
                 iter_E_syn,
+                groups=synthetic_groups,
             )
             score_syn_id = evaluate_ts_survival_model(
                 [predictor_syn] * self._n_folds,
@@ -564,12 +641,12 @@ class PerformanceEvaluator(MetricEvaluator):
                 n_folds=self._n_folds,
                 time_horizons=time_horizons,
                 pretrained=True,
+                groups=id_gt_loader.group_ids,
             )["clf"]
-        except BaseException as e:
-            log.error(
-                f"Failed to evaluate synthetic ID performance. {model.name()}: {e}"
-            )
-            score_syn_id = fail_score
+        except (TypeError, ValueError, RuntimeError) as exc:
+            raise RuntimeError(
+                f"Failed to evaluate synthetic ID performance for {model.name()}: {exc}"
+            ) from exc
 
         log.info(f"Synthetic ID performance score: {score_syn_id}")
 
@@ -580,6 +657,7 @@ class PerformanceEvaluator(MetricEvaluator):
                 iter_X_observation_times_syn,
                 iter_T_syn,
                 iter_E_syn,
+                groups=synthetic_groups,
             )
             score_syn_ood = evaluate_ts_survival_model(
                 [predictor_syn] * self._n_folds,
@@ -592,12 +670,12 @@ class PerformanceEvaluator(MetricEvaluator):
                 n_folds=self._n_folds,
                 time_horizons=time_horizons,
                 pretrained=True,
+                groups=ood_gt_loader.group_ids,
             )["clf"]
-        except BaseException as e:
-            log.error(
-                f"Failed to evaluate synthetic OOD performance. {model.name()}: {e}"
-            )
-            score_syn_ood = fail_score
+        except (TypeError, ValueError, RuntimeError) as exc:
+            raise RuntimeError(
+                f"Failed to evaluate synthetic OOD performance for {model.name()}: {exc}"
+            ) from exc
 
         log.info(f"Synthetic OOD performance score: {score_syn_ood}")
 
@@ -794,6 +872,7 @@ class PerformanceEvaluatorMLP(PerformanceEvaluator):
         test_data: torch.utils.data.Dataset,
         input_info: Dict,
         n_classes: int,
+        fit_groups: Any = None,
     ) -> float:
         _, train_Y = train_data.numpy()
         test_X, test_Y = test_data.numpy()
@@ -805,7 +884,7 @@ class PerformanceEvaluatorMLP(PerformanceEvaluator):
             classes=n_classes,
         )
 
-        clf.fit(train_data)
+        clf.fit(train_data, groups=fit_groups)
         test_pred = clf.predict_proba(torch.from_numpy(test_X)).cpu().numpy()
 
         score, _ = evaluate_auc(test_Y, test_pred)
@@ -824,7 +903,8 @@ class PerformanceEvaluatorMLP(PerformanceEvaluator):
         if self.use_cache(cache_file):
             return load_from_file(cache_file)
 
-        id_gt = X_gt.train().unpack()
+        id_gt_loader = X_gt.train()
+        id_gt = id_gt_loader.unpack()
         id_X_gt, id_y_gt = id_gt.numpy()
 
         n_classes = len(np.unique(id_y_gt))
@@ -832,31 +912,48 @@ class PerformanceEvaluatorMLP(PerformanceEvaluator):
         ood_gt = X_gt.test().unpack()
         iter_syn = X_syn.unpack()
         iter_X_syn, iter_y_syn = iter_syn.numpy()
+        synthetic_groups = X_syn.group_ids
 
-        skf = StratifiedKFold(
-            n_splits=self._n_folds, shuffle=True, random_state=self._random_state
+        cv_splits = id_gt_loader.cv_splits(
+            y=id_y_gt,
+            n_splits=self._n_folds,
+            stratified=True,
         )
 
         real_scores = []
         syn_scores_id = []
         syn_scores_ood = []
 
-        for train_idx, test_idx in skf.split(id_X_gt, id_y_gt):
+        for train_idx, test_idx in cv_splits:
             train_data = id_gt.filter_indices(train_idx)
             test_data = id_gt.filter_indices(test_idx)
+            train_groups = (
+                None
+                if id_gt_loader.group_ids is None
+                else id_gt_loader.group_ids[train_idx]
+            )
 
             real_score = self._evaluate_image_clf(
-                train_data, test_data, X_gt.info(), n_classes=n_classes
+                train_data,
+                test_data,
+                X_gt.info(),
+                n_classes=n_classes,
+                fit_groups=train_groups,
             )
             synth_score_id = self._evaluate_image_clf(
                 iter_syn,
                 test_data,
                 X_syn.info(),
                 n_classes=n_classes,
+                fit_groups=synthetic_groups,
             )  # data seen by the generator
 
             synth_score_ood = self._evaluate_image_clf(
-                iter_syn, ood_gt, X_syn.info(), n_classes=n_classes
+                iter_syn,
+                ood_gt,
+                X_syn.info(),
+                n_classes=n_classes,
+                fit_groups=synthetic_groups,
             )  # data not seen by the generator
 
             real_scores.append(real_score)
@@ -960,31 +1057,42 @@ class AugmentationPerformanceEvaluatorMLP(PerformanceEvaluatorMLP):
         return ["gt", "aug_ood"]
 
 
-# TODO: investigate if this metric is relevant or not.
 class FeatureImportanceRankDistance(MetricEvaluator):
     """
     .. inheritance-diagram:: synthcity.metrics.eval_performance.FeatureImportanceRankDistance
         :parts: 1
 
-    Train an XGBoost classifier or regressor on the synthetic data and evaluate the feature importance.
-    Train an XGBoost model on the real data and evaluate the feature importance.
+    Compare feature-importance rankings from models trained on real and
+    synthetic data.
 
-    Returns the rank distance between the feature importance
-    Returns the average performance discrepancy between training on real data vs on synthetic data.
-
-    Score:
-        close to 1: similar performance
-        close to 0: unrelated
-        close to -1: the ranks have different monotony.
+    ``corr`` is the raw rank correlation and the policy-facing default scalar.
+    ``pvalue`` is retained as an audit-only diagnostic and is never used by
+    ``evaluate_default``.
     """
 
     def __init__(self, distance: str = "kendall", **kwargs: Any) -> None:
+        kwargs.setdefault("default_metric", "corr")
         super().__init__(**kwargs)
 
         if distance not in ["kendall", "spearman"]:
             raise ValueError(f"Invalid feature distance {distance}")
 
         self._distance = distance
+        self._result_metadata = self._build_result_metadata()
+
+    def _build_result_metadata(self) -> Dict[str, Any]:
+        return {
+            "schema_version": FEATURE_IMPORTANCE_RESULT_VERSION,
+            "distance": self._distance,
+            "task_type": self._task_type,
+            "correlation_key": "corr",
+            "default_key": "corr",
+            "pvalue_key": "pvalue",
+            "pvalue_role": "audit_only",
+        }
+
+    def result_metadata(self) -> Dict[str, Any]:
+        return dict(self._result_metadata)
 
     @staticmethod
     def type() -> str:
@@ -992,7 +1100,7 @@ class FeatureImportanceRankDistance(MetricEvaluator):
 
     @staticmethod
     def direction() -> str:
-        return "minimize"
+        return "maximize"
 
     @staticmethod
     def name() -> str:
@@ -1006,6 +1114,89 @@ class FeatureImportanceRankDistance(MetricEvaluator):
         else:
             raise RuntimeError(f"unknown distance {self.distance}")
 
+    @staticmethod
+    def _aggregate_shap_importance(
+        shap_values: Any,
+        n_features: int,
+        task_type: str,
+    ) -> np.ndarray:
+        if isinstance(shap_values, list):
+            if not shap_values:
+                raise FeatureImportanceRankDistanceError(
+                    f"Feature-importance SHAP output is empty for task_type={task_type!r}"
+                )
+            try:
+                values = np.stack([np.asarray(item) for item in shap_values], axis=0)
+            except ValueError as exc:
+                raise FeatureImportanceRankDistanceError(
+                    "Feature-importance SHAP outputs have incompatible shapes "
+                    f"for task_type={task_type!r}"
+                ) from exc
+            absolute = np.abs(values)
+            if absolute.ndim == 2 and absolute.shape[-1] == n_features:
+                importance = absolute.mean(axis=0)
+            elif absolute.ndim == 3 and absolute.shape[-1] == n_features:
+                importance = absolute.mean(axis=(0, 1))
+            else:
+                raise FeatureImportanceRankDistanceError(
+                    "Feature-importance SHAP output does not preserve the feature "
+                    f"axis for task_type={task_type!r}: shape={absolute.shape!r}"
+                )
+        else:
+            absolute = np.abs(np.asarray(shap_values))
+            if absolute.ndim == 1 and absolute.shape[0] == n_features:
+                importance = absolute
+            elif absolute.ndim == 2 and absolute.shape[-1] == n_features:
+                importance = absolute.mean(axis=0)
+            elif absolute.ndim == 3 and absolute.shape[1] == n_features:
+                importance = absolute.mean(axis=(0, 2))
+            elif absolute.ndim == 3 and absolute.shape[-1] == n_features:
+                importance = absolute.mean(axis=(0, 1))
+            else:
+                raise FeatureImportanceRankDistanceError(
+                    "Feature-importance SHAP output does not preserve the feature "
+                    f"axis for task_type={task_type!r}: shape={absolute.shape!r}"
+                )
+
+        importance = np.asarray(importance, dtype=float).reshape(-1)
+        if len(importance) != n_features or not np.all(np.isfinite(importance)):
+            raise FeatureImportanceRankDistanceError(
+                "Feature-importance SHAP aggregation produced an invalid feature "
+                f"vector for task_type={task_type!r}: shape={importance.shape!r}"
+            )
+        return importance
+
+    def _aggregate_shap_for_side(
+        self,
+        shap_values: Any,
+        n_features: int,
+        side: str,
+    ) -> np.ndarray:
+        try:
+            return self._aggregate_shap_importance(
+                shap_values,
+                n_features,
+                self._task_type,
+            )
+        except (TypeError, ValueError, RuntimeError) as exc:
+            raise FeatureImportanceRankDistanceError(
+                "Feature-importance SHAP aggregation failed for "
+                f"{side} {self._task_type} data using {self._distance} distance: {exc}"
+            ) from exc
+
+    def _summarize_distance(
+        self, syn_importance: np.ndarray, gt_importance: np.ndarray
+    ) -> Dict[str, float]:
+        corr, pvalue = self.distance(syn_importance, gt_importance)
+        corr = float(np.asarray(corr).mean())
+        pvalue = float(np.asarray(pvalue).mean())
+        if not np.isfinite(corr):
+            raise FeatureImportanceRankDistanceError(
+                f"Feature-importance {self._distance} correlation is non-finite "
+                f"for task_type={self._task_type!r}"
+            )
+        return {"corr": corr, "pvalue": pvalue}
+
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
     def evaluate(
         self,
@@ -1014,10 +1205,27 @@ class FeatureImportanceRankDistance(MetricEvaluator):
     ) -> Dict:
         cache_file = (
             self._workspace
-            / f"sc_metric_cache_{self.type()}_{self.name()}_{X_gt.hash()}_{X_syn.hash()}_{platform.python_version()}.bkp"
+            / f"sc_metric_cache_{self.type()}_{self.name()}_{FEATURE_IMPORTANCE_RESULT_VERSION}_{self._distance}_{self._task_type}_{X_gt.hash()}_{X_syn.hash()}_{platform.python_version()}.bkp"
         )
         if self.use_cache(cache_file):
-            results = load_from_file(cache_file)
+            cached = load_from_file(cache_file)
+            if (
+                not isinstance(cached, dict)
+                or cached.get("cache_schema_version")
+                != FEATURE_IMPORTANCE_CACHE_SCHEMA_VERSION
+            ):
+                raise FeatureImportanceRankDistanceError(
+                    f"Malformed feature-importance metric cache envelope at {cache_file}"
+                )
+            if (
+                not isinstance(cached.get("result"), dict)
+                or not isinstance(cached.get("metadata"), dict)
+            ):
+                raise FeatureImportanceRankDistanceError(
+                    f"Malformed feature-importance metric cache envelope at {cache_file}"
+                )
+            self._result_metadata = dict(cached["metadata"])
+            results = cached["result"]
             log.info(
                 f" Feature Importance rank distance df hash = {X_gt.train().hash()} ood hash = {X_gt.test().hash()}. score = {results}"
             )
@@ -1038,29 +1246,35 @@ class FeatureImportanceRankDistance(MetricEvaluator):
 
             columns = id_X_gt.columns
 
-            gt_model = copy.deepcopy(model).fit(id_X_gt, id_T_gt, id_E_gt)
-            gt_shap = gt_model.explain(ood_X_gt)
-
-            syn_shap = np.random.rand(*ood_X_gt.shape)
+            try:
+                gt_model = copy.deepcopy(model).fit(id_X_gt, id_T_gt, id_E_gt)
+                gt_shap = gt_model.explain(ood_X_gt)
+            except (ExplainerError, TypeError, ValueError, RuntimeError, XGBoostError) as exc:
+                raise FeatureImportanceRankDistanceError(
+                    "Feature-importance SHAP evaluation failed for real "
+                    f"survival data using {self._distance} distance"
+                ) from exc
             try:
                 syn_model = copy.deepcopy(model).fit(iter_X_syn, iter_T_syn, iter_E_syn)
                 syn_shap = syn_model.explain(ood_X_gt)
-            except BaseException:
-                pass
+            except (ExplainerError, TypeError, ValueError, RuntimeError, XGBoostError) as exc:
+                raise FeatureImportanceRankDistanceError(
+                    "Feature-importance SHAP evaluation failed for synthetic "
+                    f"survival data using {self._distance} distance"
+                ) from exc
 
-            syn_xai = np.mean(np.abs(syn_shap), axis=0)  # [n_features]
-            gt_xai = np.mean(np.abs(gt_shap), axis=0)  # [n_features]
-            if len(syn_xai) != len(columns):
-                raise RuntimeError("Invalid xai features")
+            syn_xai = self._aggregate_shap_for_side(
+                syn_shap,
+                len(columns),
+                side="synthetic",
+            )
+            gt_xai = self._aggregate_shap_for_side(
+                gt_shap,
+                len(columns),
+                side="real",
+            )
 
-            corr, pvalue = self.distance(syn_xai, gt_xai)
-            corr = np.mean(np.nan_to_num(corr))
-            pvalue = np.mean(np.nan_to_num(pvalue))
-
-            results = {
-                "corr": corr,
-                "pvalue": pvalue,
-            }
+            results = self._summarize_distance(syn_xai, gt_xai)
 
         elif self._task_type == "classification":
             model = XGBClassifier(
@@ -1075,32 +1289,37 @@ class FeatureImportanceRankDistance(MetricEvaluator):
             ood_X_gt, ood_y_gt = X_gt.test().unpack()
             iter_X_syn, iter_y_syn = X_syn.unpack()
 
-            syn_shap = np.random.rand(
-                len(np.unique(id_y_gt)), ood_X_gt.shape[0], ood_X_gt.shape[1]
-            )
             try:
                 syn_model = copy.deepcopy(model).fit(iter_X_syn, iter_y_syn)
                 syn_explainer = shap.TreeExplainer(syn_model)
                 syn_shap = syn_explainer.shap_values(ood_X_gt)
-            except BaseException:
-                pass
+            except (ExplainerError, TypeError, ValueError, RuntimeError, XGBoostError) as exc:
+                raise FeatureImportanceRankDistanceError(
+                    "Feature-importance SHAP evaluation failed for synthetic "
+                    f"classification data using {self._distance} distance"
+                ) from exc
+            try:
+                gt_model = copy.deepcopy(model).fit(id_X_gt, id_y_gt)
+                gt_explainer = shap.TreeExplainer(gt_model)
+                gt_shap = gt_explainer.shap_values(ood_X_gt)
+            except (ExplainerError, TypeError, ValueError, RuntimeError, XGBoostError) as exc:
+                raise FeatureImportanceRankDistanceError(
+                    "Feature-importance SHAP evaluation failed for real "
+                    f"classification data using {self._distance} distance"
+                ) from exc
 
-            gt_model = copy.deepcopy(model).fit(id_X_gt, id_y_gt)
-            gt_explainer = shap.TreeExplainer(gt_model)
-            gt_shap = gt_explainer.shap_values(ood_X_gt)
+            syn_xai = self._aggregate_shap_for_side(
+                syn_shap,
+                len(id_X_gt.columns),
+                side="synthetic",
+            )
+            gt_xai = self._aggregate_shap_for_side(
+                gt_shap,
+                len(id_X_gt.columns),
+                side="real",
+            )
 
-            # evaluate absolute influence for each class
-            syn_xai = np.mean(np.abs(syn_shap), axis=1)  # classes x n_features
-            gt_xai = np.mean(np.abs(gt_shap), axis=1)  # classes x n_features
-
-            corr, pvalue = self.distance(syn_xai, gt_xai)
-            corr = np.mean(np.nan_to_num(corr))
-            pvalue = np.mean(np.nan_to_num(pvalue))
-
-            results = {
-                "corr": corr,
-                "pvalue": pvalue,
-            }
+            results = self._summarize_distance(syn_xai, gt_xai)
 
         elif self._task_type == "regression":
             model = XGBRegressor(
@@ -1113,33 +1332,51 @@ class FeatureImportanceRankDistance(MetricEvaluator):
             ood_X_gt, ood_y_gt = X_gt.test().unpack()
             iter_X_syn, iter_y_syn = X_syn.unpack()
 
-            syn_shap = np.random.rand(*ood_X_gt.shape)
             try:
                 syn_model = copy.deepcopy(model).fit(iter_X_syn, iter_y_syn)
                 syn_explainer = shap.TreeExplainer(syn_model)
                 syn_shap = syn_explainer.shap_values(ood_X_gt)
-            except BaseException:
-                pass
+            except (ExplainerError, TypeError, ValueError, RuntimeError, XGBoostError) as exc:
+                raise FeatureImportanceRankDistanceError(
+                    "Feature-importance SHAP evaluation failed for synthetic "
+                    f"regression data using {self._distance} distance"
+                ) from exc
+            try:
+                gt_model = copy.deepcopy(model).fit(id_X_gt, id_y_gt)
+                gt_explainer = shap.TreeExplainer(gt_model)
+                gt_shap = gt_explainer.shap_values(ood_X_gt)
+            except (ExplainerError, TypeError, ValueError, RuntimeError, XGBoostError) as exc:
+                raise FeatureImportanceRankDistanceError(
+                    "Feature-importance SHAP evaluation failed for real "
+                    f"regression data using {self._distance} distance"
+                ) from exc
 
-            gt_model = copy.deepcopy(model).fit(id_X_gt, id_y_gt)
-            gt_explainer = shap.TreeExplainer(gt_model)
-            gt_shap = gt_explainer.shap_values(ood_X_gt)
+            syn_xai = self._aggregate_shap_for_side(
+                syn_shap,
+                len(id_X_gt.columns),
+                side="synthetic",
+            )
+            gt_xai = self._aggregate_shap_for_side(
+                gt_shap,
+                len(id_X_gt.columns),
+                side="real",
+            )
 
-            syn_xai = np.mean(np.abs(syn_shap), axis=0)  # [n_features]
-            gt_xai = np.mean(np.abs(gt_shap), axis=0)  # [n_features]
-
-            corr, pvalue = self.distance(syn_xai, gt_xai)
-            corr = np.mean(np.nan_to_num(corr))
-            pvalue = np.mean(np.nan_to_num(pvalue))
-
-            results = {
-                "corr": corr,
-                "pvalue": pvalue,
-            }
+            results = self._summarize_distance(syn_xai, gt_xai)
         else:
-            raise RuntimeError(f"Unuspported task type {self._task_type}")
+            raise FeatureImportanceRankDistanceError(
+                f"Unsupported task type {self._task_type}"
+            )
 
-        save_to_file(cache_file, results)
+        self._result_metadata = self.result_metadata()
+        save_to_file(
+            cache_file,
+            {
+                "cache_schema_version": FEATURE_IMPORTANCE_CACHE_SCHEMA_VERSION,
+                "result": results,
+                "metadata": self._result_metadata,
+            },
+        )
 
         log.info(
             f" Feature Importance rank distance df hash = {X_gt.train().hash()} ood hash = {X_gt.test().hash()}. score = {results}"
@@ -1154,4 +1391,4 @@ class FeatureImportanceRankDistance(MetricEvaluator):
     ) -> float:
         results = self.evaluate(X_gt, X_syn)
 
-        return results["corr"]
+        return float(results[self.result_metadata()["default_key"]])

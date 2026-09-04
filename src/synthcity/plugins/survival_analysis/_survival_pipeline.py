@@ -13,7 +13,7 @@ from xgboost import XGBClassifier
 # synthcity absolute
 import synthcity.logger as log
 import synthcity.plugins as plugins
-from synthcity.plugins.core.dataloader import DataLoader
+from synthcity.plugins.core.dataloader import DataLoader, GenericDataLoader
 from synthcity.plugins.core.distribution import Distribution
 from synthcity.plugins.core.models.time_to_event import TimeToEventPlugin
 from synthcity.plugins.core.models.time_to_event import (
@@ -130,7 +130,7 @@ class SurvivalPipeline(Plugin):
 
         if self.uncensoring_model is not None:
             log.info("Train the uncensoring model")
-            self.uncensoring_model.fit(Xcov, T, E)
+            self.uncensoring_model.fit(Xcov, T, E, groups=X.group_ids)
 
         log.info("Train the synthetic generator")
         if self.strategy == "uncensoring":
@@ -145,10 +145,18 @@ class SurvivalPipeline(Plugin):
             df_train = Xcov.copy()
             df_train[self.time_to_event_column] = T_uncensored
 
-            self.generator.fit(df_train, cond=cond, **kwargs)
+            self.generator.fit(
+                GenericDataLoader(df_train, group_ids=X.group_ids),
+                cond=cond,
+                **kwargs,
+            )
         elif self.strategy == "survival_function":
             # Synthetic data generator
-            self.generator.fit(X.dataframe(), cond=cond, **kwargs)
+            self.generator.fit(
+                GenericDataLoader(X.dataframe(), group_ids=X.group_ids),
+                cond=cond,
+                **kwargs,
+            )
         else:
             raise ValueError(f"unsupported strategy {self.strategy}")
 

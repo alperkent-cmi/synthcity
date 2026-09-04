@@ -100,3 +100,6 @@ def test_plugin_generate_survival() -> None:
     assert len(X_gen) == 10
     assert test_plugin.schema_includes(X_gen)
     assert list(X_gen.columns) == list(survival_data.columns)
+
+    generated_events = X_gen.unpack(as_numpy=True)[-1]
+    assert set(np.unique(generated_events)) == {0, 1}

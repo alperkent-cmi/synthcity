@@ -9,7 +9,6 @@ import numpy as np
 import pandas as pd
 import torch
 from pydantic import validate_arguments
-from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
@@ -32,7 +31,7 @@ from synthcity.utils.reproducibility import enable_reproducible_results
 from synthcity.utils.samplers import ImbalancedDatasetSampler
 
 # synthcity relative
-from ._base import TimeToEventPlugin
+from ._base import TimeToEventPlugin, _train_validation_indices
 
 
 class TimeEventNN(nn.Module):
@@ -105,6 +104,7 @@ class TimeEventNN(nn.Module):
         X: np.ndarray,
         T: np.ndarray,
         E: np.ndarray,
+        groups: Any = None,
     ) -> "TimeEventNN":
         Xt = self._check_tensor(X)
         Tt = self._check_tensor(T)
@@ -114,6 +114,7 @@ class TimeEventNN(nn.Module):
             Xt,
             Tt,
             Et,
+            groups=groups,
         )
 
         return self
@@ -130,15 +131,24 @@ class TimeEventNN(nn.Module):
         return self.generator(X)
 
     def dataloader(
-        self, X: torch.Tensor, T: torch.Tensor, E: torch.Tensor
+        self, X: torch.Tensor, T: torch.Tensor, E: torch.Tensor, groups: Any = None
     ) -> Tuple[DataLoader, TensorDataset]:
-        X_train, X_val, T_train, T_val, E_train, E_val = train_test_split(
-            X.cpu(),
-            T.cpu(),
-            E.cpu(),
-            stratify=E.cpu(),
-            random_state=self.random_state,
+        train_idx, validation_idx = _train_validation_indices(
+            len(X),
+            train_size=0.75,
+            seed=self.random_state,
+            groups=groups,
+            stratify=E.cpu() if groups is None else None,
         )
+        X_cpu = X.cpu()
+        T_cpu = T.cpu()
+        E_cpu = E.cpu()
+        train_idx = torch.as_tensor(train_idx, dtype=torch.long)
+        validation_idx = torch.as_tensor(validation_idx, dtype=torch.long)
+
+        X_train, X_val = X_cpu[train_idx], X_cpu[validation_idx]
+        T_train, T_val = T_cpu[train_idx], T_cpu[validation_idx]
+        E_train, E_val = E_cpu[train_idx], E_cpu[validation_idx]
 
         train_dataset = TensorDataset(
             self._check_tensor(X_train),
@@ -221,13 +231,14 @@ class TimeEventNN(nn.Module):
         X: torch.Tensor,
         T: torch.Tensor,
         E: torch.Tensor,
+        groups: Any = None,
     ) -> "TimeEventNN":
         X = self._check_tensor(X).float()
         T = self._check_tensor(T).float()
         E = self._check_tensor(E).long()
 
         # Load Dataset
-        loader, val_loader = self.dataloader(X, T, E)
+        loader, val_loader = self.dataloader(X, T, E, groups=groups)
 
         best_exp_tte_err = 9999
         patience = 0
@@ -404,7 +415,13 @@ class TENNTimeToEvent(TimeToEventPlugin):
         self.kwargs = kwargs
 
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
-    def fit(self, X: pd.DataFrame, T: pd.Series, Y: pd.Series) -> "TimeToEventPlugin":
+    def fit(
+        self,
+        X: pd.DataFrame,
+        T: pd.Series,
+        Y: pd.Series,
+        groups: Any = None,
+    ) -> "TimeToEventPlugin":
         "Training logic"
         self._fit_censoring_model(X, T, Y)
 
@@ -419,7 +436,7 @@ class TENNTimeToEvent(TimeToEventPlugin):
         self.scaler_T = MinMaxScaler()
         enc_T = self.scaler_T.fit_transform(T.values.reshape(-1, 1)).squeeze()
 
-        self.model.fit(enc_X, enc_T, Y)
+        self.model.fit(enc_X, enc_T, Y, groups=groups)
 
         return self
 

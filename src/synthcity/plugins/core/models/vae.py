@@ -13,6 +13,7 @@ from tqdm import tqdm
 # synthcity absolute
 import synthcity.logger as log
 from synthcity.utils.constants import DEVICE
+from synthcity.utils.evaluation import train_test_indices
 
 # synthcity relative
 from .mlp import MLP
@@ -280,6 +281,7 @@ class VAE(nn.Module):
         self,
         X: np.ndarray,
         cond: Optional[np.ndarray] = None,
+        groups: Any = None,
     ) -> Any:
         Xt = self._check_tensor(X)
         condt: Optional[torch.Tensor] = None
@@ -300,7 +302,7 @@ class VAE(nn.Module):
 
             condt = self._check_tensor(cond)
 
-        self._train(Xt, condt)
+        self._train(Xt, condt, groups=groups)
 
         return self
 
@@ -357,9 +359,27 @@ class VAE(nn.Module):
         eps = torch.randn_like(std)
         return eps * std + mu
 
-    def _train_test_split(self, X: torch.Tensor, cond: Optional[torch.Tensor]) -> Tuple:
+    def _train_test_split(
+        self,
+        X: torch.Tensor,
+        cond: Optional[torch.Tensor],
+        groups: Any = None,
+    ) -> Tuple:
         if self.dataloader_sampler is not None:
+            if groups is not None and not getattr(
+                self.dataloader_sampler, "supports_group_ids", False
+            ):
+                raise ValueError(
+                    "grouped validation requires a group-aware data sampler"
+                )
             train_idx, test_idx = self.dataloader_sampler.train_test()
+        elif groups is not None:
+            train_idx, test_idx = train_test_indices(
+                len(X),
+                train_size=0.8,
+                seed=self.random_state,
+                groups=groups,
+            )
         else:
             total = np.arange(0, len(X))
             np.random.shuffle(total)
@@ -378,10 +398,11 @@ class VAE(nn.Module):
         self,
         X: Tensor,
         cond: Optional[torch.Tensor] = None,
+        groups: Any = None,
     ) -> Any:
         self._original_cond = cond
 
-        X, X_val, cond, cond_val = self._train_test_split(X, cond)
+        X, X_val, cond, cond_val = self._train_test_split(X, cond, groups=groups)
         loader = self._dataloader(X, cond)
 
         optimizer = Adam(

@@ -1,5 +1,7 @@
 # stdlib
 import random
+import hashlib
+import json
 from abc import ABCMeta, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -10,7 +12,10 @@ import pandas as pd
 import PIL
 import torch
 from pydantic import validate_arguments
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import (
+    GroupShuffleSplit,
+    train_test_split,
+)
 from sklearn.preprocessing import LabelEncoder
 from torchvision import transforms
 
@@ -20,7 +25,50 @@ from synthcity.plugins.core.dataset import FlexibleDataset, TensorDataset
 from synthcity.plugins.core.models.feature_encoder import DatetimeEncoder
 from synthcity.plugins.core.models.syn_seq.syn_seq_encoder import Syn_SeqEncoder
 from synthcity.utils.compression import compress_dataset, decompress_dataset
+from synthcity.utils.evaluation import cross_validation_splits, train_test_indices
 from synthcity.utils.serialization import dataframe_hash
+
+
+def _group_codes(group_ids: Any) -> np.ndarray:
+    codes: dict[tuple[type, Any], int] = {}
+    encoded = []
+    for value in list(group_ids):
+        key = (type(value), value)
+        try:
+            hash(key)
+        except TypeError as exc:
+            raise ValueError("group_ids must contain hashable scalar values") from exc
+        if key not in codes:
+            codes[key] = len(codes)
+        encoded.append(codes[key])
+    return np.asarray(encoded, dtype=int)
+
+
+def _sequence_group_ids(
+    group_ids: Any,
+    data: pd.DataFrame,
+    id_column: str,
+    seq_offset: int,
+) -> np.ndarray:
+    values = list(group_ids)
+    sequence_ids = sorted(list(set(data[id_column])))
+    positions = []
+    for sequence_id in sequence_ids:
+        try:
+            position = int(sequence_id) - int(seq_offset)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Sequence identifier {sequence_id!r} cannot be mapped to group_ids"
+            ) from exc
+        if position + int(seq_offset) != sequence_id or not 0 <= position < len(values):
+            raise ValueError(
+                f"Sequence identifier {sequence_id!r} is outside group_ids"
+            )
+        positions.append(position)
+
+    source = np.empty(len(values), dtype=object)
+    source[:] = values
+    return source[np.asarray(positions, dtype=int)]
 
 
 class DataLoader(metaclass=ABCMeta):
@@ -68,6 +116,8 @@ class DataLoader(metaclass=ABCMeta):
             The feature name that provides labels for downstream tasks.
     """
 
+    supports_group_ids = False
+
     def __init__(
         self,
         data_type: str,
@@ -79,6 +129,7 @@ class DataLoader(metaclass=ABCMeta):
         outcome_features: List[str] = [],
         train_size: float = 0.8,
         random_state: int = 0,
+        group_ids: Optional[Any] = None,
         **kwargs: Any,
     ) -> None:
         self.static_features = static_features
@@ -91,90 +142,156 @@ class DataLoader(metaclass=ABCMeta):
         self.data = data
         self.data_type = data_type
         self.train_size = train_size
+        if group_ids is not None and not self.supports_group_ids:
+            raise ValueError(
+                f"{type(self).__name__} does not support row-aligned group_ids; "
+                "use GenericDataLoader for grouped tabular data"
+            )
+        if group_ids is None:
+            self.group_ids = None
+        else:
+            values = list(group_ids)
+            self.group_ids = np.empty(len(values), dtype=object)
+            self.group_ids[:] = values
+            if len(self.group_ids) != self._sample_count():
+                raise ValueError(
+                    f"group_ids length {len(self.group_ids)} does not match data length {self._sample_count()}"
+                )
+
+    @property
+    def has_groups(self) -> bool:
+        return self.group_ids is not None
+
+    def _sample_count(self) -> int:
+        return len(self)
+
+    def cv_splits(
+        self,
+        y: Any = None,
+        n_splits: int = 5,
+        stratified: bool = False,
+    ) -> list[tuple[np.ndarray, np.ndarray]]:
+        """Return deterministic row or group-disjoint cross-validation splits."""
+        return cross_validation_splits(
+            self._sample_count(),
+            y=y,
+            n_folds=n_splits,
+            seed=self.random_state,
+            groups=self.group_ids,
+            stratified=stratified,
+        )
+
+    def _groups_for_frame(self, data: pd.DataFrame) -> Optional[np.ndarray]:
+        if self.group_ids is None:
+            return None
+        if not isinstance(self.data, pd.DataFrame) or not isinstance(data, pd.DataFrame):
+            raise ValueError("Grouped frame decoration requires DataFrame data")
+        if not self.data.index.is_unique or not data.index.is_unique:
+            raise ValueError("Grouped frame decoration requires unique row indexes")
+        group_series = pd.Series(self.group_ids, index=self.data.index)
+        if not data.index.isin(group_series.index).all():
+            raise ValueError("Decorated grouped data contains an unknown row index")
+        return group_series.loc[data.index].to_numpy()
 
     def raw(self) -> Any:
         return self.data
 
     @abstractmethod
-    def unpack(self, as_numpy: bool = False, pad: bool = False) -> Any:
-        ...
+    def unpack(self, as_numpy: bool = False, pad: bool = False) -> Any: ...
 
     @abstractmethod
-    def decorate(self, data: Any) -> "DataLoader":
-        ...
+    def decorate(self, data: Any) -> "DataLoader": ...
 
     def type(self) -> str:
         return self.data_type
 
     @property
     @abstractmethod
-    def shape(self) -> tuple:
-        ...
+    def shape(self) -> tuple: ...
 
     @property
     @abstractmethod
-    def columns(self) -> list:
-        ...
+    def columns(self) -> list: ...
 
     @abstractmethod
-    def dataframe(self) -> pd.DataFrame:
-        ...
+    def dataframe(self) -> pd.DataFrame: ...
 
     @abstractmethod
-    def numpy(self) -> np.ndarray:
-        ...
+    def numpy(self) -> np.ndarray: ...
 
     @property
     def values(self) -> np.ndarray:
         return self.numpy()
 
     @abstractmethod
-    def info(self) -> dict:
-        ...
+    def info(self) -> dict: ...
 
     @abstractmethod
-    def __len__(self) -> int:
-        ...
+    def __len__(self) -> int: ...
 
     @abstractmethod
-    def satisfies(self, constraints: Constraints) -> bool:
-        ...
+    def satisfies(self, constraints: Constraints) -> bool: ...
 
     @abstractmethod
-    def match(self, constraints: Constraints) -> "DataLoader":
-        ...
+    def match(self, constraints: Constraints) -> "DataLoader": ...
 
     @staticmethod
     @abstractmethod
-    def from_info(data: pd.DataFrame, info: dict) -> "DataLoader":
-        ...
+    def from_info(data: pd.DataFrame, info: dict) -> "DataLoader": ...
 
     @abstractmethod
-    def sample(self, count: int, random_state: int = 0) -> "DataLoader":
-        ...
+    def sample(self, count: int, random_state: int = 0) -> "DataLoader": ...
 
     @abstractmethod
-    def drop(self, columns: list = []) -> "DataLoader":
-        ...
+    def drop(self, columns: list = []) -> "DataLoader": ...
 
     @abstractmethod
-    def __getitem__(self, feature: Union[str, list]) -> Any:
-        ...
+    def __getitem__(self, feature: Union[str, list]) -> Any: ...
 
     @abstractmethod
-    def __setitem__(self, feature: str, val: Any) -> None:
-        ...
+    def __setitem__(self, feature: str, val: Any) -> None: ...
 
     @abstractmethod
-    def train(self) -> "DataLoader":
-        ...
+    def train(self) -> "DataLoader": ...
 
     @abstractmethod
-    def test(self) -> "DataLoader":
-        ...
+    def test(self) -> "DataLoader": ...
 
     def hash(self) -> str:
-        return dataframe_hash(self.dataframe())
+        frame_hash = dataframe_hash(self.dataframe())
+        semantic_payload = {
+            "data_type": self.data_type,
+            "static_features": list(self.static_features),
+            "temporal_features": list(self.temporal_features),
+            "sensitive_features": list(self.sensitive_features),
+            "important_features": list(self.important_features),
+            "outcome_features": list(self.outcome_features),
+            "train_size": self.train_size,
+            "random_state": self.random_state,
+            "target_column": getattr(self, "target_column", None),
+            "fairness_column": getattr(self, "fairness_column", None),
+            "domain_column": getattr(self, "domain_column", None),
+            "feature_types": getattr(self, "feature_types", None),
+            "source_table": getattr(self, "source_table", None),
+        }
+        if self.group_ids is None:
+            group_payload = None
+        else:
+            group_payload = [
+                {"type": type(value).__qualname__, "value": repr(value)}
+                for value in self.group_ids.tolist()
+            ]
+        return hashlib.sha256(
+            json.dumps(
+                {
+                    "dataframe": frame_hash,
+                    "group_ids": group_payload,
+                    "semantic": semantic_payload,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
 
     def __repr__(self, *args: Any, **kwargs: Any) -> str:
         return self.dataframe().__repr__(*args, **kwargs)
@@ -183,12 +300,10 @@ class DataLoader(metaclass=ABCMeta):
         return self.dataframe()._repr_html_(*args, **kwargs)
 
     @abstractmethod
-    def fillna(self, value: Any) -> "DataLoader":
-        ...
+    def fillna(self, value: Any) -> "DataLoader": ...
 
     @abstractmethod
-    def compression_protected_features(self) -> list:
-        ...
+    def compression_protected_features(self) -> list: ...
 
     def domain(self) -> Optional[str]:
         return None
@@ -199,7 +314,7 @@ class DataLoader(metaclass=ABCMeta):
         to_compress = self.data.copy().drop(
             columns=self.compression_protected_features()
         )
-        compressed, context = compress_dataset(to_compress)
+        compressed, context = compress_dataset(to_compress, groups=self.group_ids)
         for protected_col in self.compression_protected_features():
             compressed[protected_col] = self.data[protected_col]
 
@@ -224,7 +339,12 @@ class DataLoader(metaclass=ABCMeta):
             encoders = {}
 
             for col in encoded.columns:
+                declared_categorical = (
+                    getattr(self, "feature_types", {}).get(col) == "categorical"
+                )
                 if (
+                    not declared_categorical
+                    and
                     encoded[col].infer_objects().dtype.kind == "i"
                     and encoded[col].min() == 0
                     and encoded[col].max() == len(encoded[col].unique()) - 1
@@ -232,7 +352,8 @@ class DataLoader(metaclass=ABCMeta):
                     continue
 
                 if (
-                    encoded[col].infer_objects().dtype.kind in ["O", "b"]
+                    declared_categorical
+                    or encoded[col].infer_objects().dtype.kind in ["O", "b"]
                     or len(encoded[col].unique()) < 15
                 ):
                     encoder = LabelEncoder().fit(encoded[col])
@@ -261,16 +382,15 @@ class DataLoader(metaclass=ABCMeta):
         return self.from_info(decoded, self.info())
 
     @abstractmethod
-    def is_tabular(self) -> bool:
-        ...
+    def is_tabular(self) -> bool: ...
 
     @abstractmethod
-    def get_fairness_column(self) -> Union[str, Any]:
-        ...
+    def get_fairness_column(self) -> Union[str, Any]: ...
 
 
 class GenericDataLoader(DataLoader):
     """
+
     .. inheritance-diagram:: synthcity.plugins.core.dataloader.GenericDataLoader
         :parts: 1
 
@@ -302,6 +422,8 @@ class GenericDataLoader(DataLoader):
         >>> loader = GenericDataLoader(X, target_column="target", sensitive_columns=["sex"],)
     """
 
+    supports_group_ids = True
+
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
@@ -313,6 +435,9 @@ class GenericDataLoader(DataLoader):
         domain_column: Optional[str] = None,
         random_state: int = 0,
         train_size: float = 0.8,
+        group_ids: Optional[Any] = None,
+        feature_types: Optional[Dict[str, str]] = None,
+        source_table: Optional[Dict[str, str]] = None,
         **kwargs: Any,
     ) -> None:
         if not isinstance(data, pd.DataFrame):
@@ -328,6 +453,37 @@ class GenericDataLoader(DataLoader):
 
         self.fairness_column = fairness_column
         self.domain_column = domain_column
+        inferred_feature_types = {
+            column: (
+                "categorical"
+                if (
+                    pd.api.types.is_object_dtype(data[column])
+                    or isinstance(data[column].dtype, pd.CategoricalDtype)
+                    or pd.api.types.is_bool_dtype(data[column])
+                )
+                else "continuous"
+            )
+            for column in data.columns
+        }
+        self.feature_types = dict(inferred_feature_types)
+        if feature_types is not None:
+            unknown_columns = set(feature_types).difference(data.columns)
+            if unknown_columns:
+                raise ValueError(
+                    f"feature_types contains unknown columns: {sorted(unknown_columns)}"
+                )
+            invalid_types = {
+                column: value
+                for column, value in feature_types.items()
+                if value not in {"categorical", "continuous"}
+            }
+            if invalid_types:
+                raise ValueError(
+                    "feature_types values must be 'categorical' or 'continuous': "
+                    f"{invalid_types}"
+                )
+            self.feature_types.update(feature_types)
+        self.source_table = dict(source_table or {})
 
         super().__init__(
             data_type="generic",
@@ -338,6 +494,7 @@ class GenericDataLoader(DataLoader):
             outcome_features=[self.target_column],
             random_state=random_state,
             train_size=train_size,
+            group_ids=group_ids,
             **kwargs,
         )
 
@@ -379,7 +536,7 @@ class GenericDataLoader(DataLoader):
         return self.dataframe().values
 
     def info(self) -> dict:
-        return {
+        info = {
             "data_type": self.data_type,
             "len": len(self),
             "static_features": self.static_features,
@@ -390,12 +547,18 @@ class GenericDataLoader(DataLoader):
             "fairness_column": self.fairness_column,
             "domain_column": self.domain_column,
             "train_size": self.train_size,
+            "feature_types": dict(self.feature_types),
+            "source_table": dict(self.source_table),
         }
+        if self.group_ids is not None:
+            info["group_ids"] = self.group_ids.tolist()
+        return info
 
     def __len__(self) -> int:
         return len(self.data)
 
     def decorate(self, data: Any) -> "DataLoader":
+        group_ids = self._groups_for_frame(data)
         return GenericDataLoader(
             data,
             sensitive_features=self.sensitive_features,
@@ -405,7 +568,32 @@ class GenericDataLoader(DataLoader):
             train_size=self.train_size,
             fairness_column=self.fairness_column,
             domain_column=self.domain_column,
+            group_ids=group_ids,
+            feature_types={
+                column: self.feature_types[column]
+                for column in data.columns
+                if column in self.feature_types
+            },
+            source_table={
+                column: self.source_table[column]
+                for column in data.columns
+                if column in self.source_table
+            },
         )
+
+    def _groups_for_frame(self, data: pd.DataFrame) -> Optional[np.ndarray]:
+        if self.group_ids is None:
+            return None
+        if not isinstance(data, pd.DataFrame):
+            raise ValueError(
+                "Grouped GenericDataLoader decoration requires a DataFrame"
+            )
+        if not self.data.index.is_unique or not data.index.is_unique:
+            raise ValueError("Grouped GenericDataLoader requires unique row indexes")
+        group_series = pd.Series(self.group_ids, index=self.data.index)
+        if not data.index.isin(group_series.index).all():
+            raise ValueError("Decorated grouped data contains an unknown row index")
+        return group_series.loc[data.index].to_numpy()
 
     def satisfies(self, constraints: Constraints) -> bool:
         return constraints.is_valid(self.data)
@@ -414,7 +602,23 @@ class GenericDataLoader(DataLoader):
         return self.decorate(constraints.match(self.data))
 
     def sample(self, count: int, random_state: int = 0) -> "DataLoader":
-        return self.decorate(self.data.sample(count, random_state=random_state))
+        if self.group_ids is None:
+            return self.decorate(self.data.sample(count, random_state=random_state))
+        if count < 1:
+            raise ValueError(f"count must be positive, got {count}")
+        groups = pd.Series(self.group_ids, index=self.data.index)
+        unique_groups = groups.drop_duplicates().sample(
+            frac=1, random_state=random_state
+        )
+        selected_groups = []
+        selected_count = 0
+        for group in unique_groups:
+            selected_groups.append(group)
+            selected_count += int((groups == group).sum())
+            if selected_count >= count:
+                break
+        sampled = self.data.loc[groups.isin(selected_groups)]
+        return self.decorate(sampled)
 
     def drop(self, columns: list = []) -> "DataLoader":
         return self.decorate(self.data.drop(columns=columns))
@@ -432,6 +636,9 @@ class GenericDataLoader(DataLoader):
             fairness_column=info["fairness_column"],
             domain_column=info["domain_column"],
             train_size=info["train_size"],
+            group_ids=info.get("group_ids"),
+            feature_types=info.get("feature_types"),
+            source_table=info.get("source_table"),
         )
 
     def __getitem__(self, feature: Union[str, list, int]) -> Any:
@@ -441,6 +648,17 @@ class GenericDataLoader(DataLoader):
         self.data[feature] = val
 
     def _train_test_split(self) -> Tuple:
+        if self.group_ids is not None:
+            splitter = GroupShuffleSplit(
+                n_splits=1,
+                train_size=self.train_size,
+                random_state=self.random_state,
+            )
+            train_idx, test_idx = next(
+                splitter.split(self.data, groups=_group_codes(self.group_ids))
+            )
+            return self.data.iloc[train_idx], self.data.iloc[test_idx]
+
         stratify = None
         if self.target_column in self.data:
             target = self.data[self.target_column]
@@ -456,11 +674,15 @@ class GenericDataLoader(DataLoader):
 
     def train(self) -> "DataLoader":
         train_data, _ = self._train_test_split()
-        return self.decorate(train_data.reset_index(drop=True))
+        loader = self.decorate(train_data)
+        loader.data = loader.data.reset_index(drop=True)
+        return loader
 
     def test(self) -> "DataLoader":
         _, test_data = self._train_test_split()
-        return self.decorate(test_data.reset_index(drop=True))
+        loader = self.decorate(test_data)
+        loader.data = loader.data.reset_index(drop=True)
+        return loader
 
     def fillna(self, value: Any) -> "DataLoader":
         self.data = self.data.fillna(value)
@@ -502,6 +724,8 @@ class SurvivalAnalysisDataLoader(DataLoader):
     Example:
         >>> TODO
     """
+
+    supports_group_ids = True
 
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
     def __init__(
@@ -592,7 +816,7 @@ class SurvivalAnalysisDataLoader(DataLoader):
         return self.dataframe().values
 
     def info(self) -> dict:
-        return {
+        info = {
             "data_type": self.data_type,
             "len": len(self),
             "static_features": list(self.static_features),
@@ -605,11 +829,18 @@ class SurvivalAnalysisDataLoader(DataLoader):
             "time_horizons": self.time_horizons,
             "train_size": self.train_size,
         }
+        if self.group_ids is not None:
+            info["group_ids"] = self.group_ids.tolist()
+        return info
 
     def __len__(self) -> int:
         return len(self.data)
 
-    def decorate(self, data: Any) -> "DataLoader":
+    def decorate(
+        self, data: Any, group_ids: Optional[Any] = None
+    ) -> "DataLoader":
+        if group_ids is None:
+            group_ids = self._groups_for_frame(data)
         return SurvivalAnalysisDataLoader(
             data,
             sensitive_features=self.sensitive_features,
@@ -620,6 +851,7 @@ class SurvivalAnalysisDataLoader(DataLoader):
             time_horizons=self.time_horizons,
             random_state=self.random_state,
             train_size=self.train_size,
+            group_ids=group_ids,
         )
 
     def satisfies(self, constraints: Constraints) -> bool:
@@ -653,6 +885,7 @@ class SurvivalAnalysisDataLoader(DataLoader):
             important_features=info["important_features"],
             time_horizons=info["time_horizons"],
             fairness_column=info["fairness_column"],
+            group_ids=info.get("group_ids"),
         )
 
     def __getitem__(self, feature: Union[str, list, int]) -> Any:
@@ -663,23 +896,47 @@ class SurvivalAnalysisDataLoader(DataLoader):
 
     def train(self) -> "DataLoader":
         stratify = self.data[self.target_column]
-        train_data, _ = train_test_split(
-            self.data, train_size=self.train_size, random_state=0, stratify=stratify
-        )
+        if self.group_ids is None:
+            train_data, _ = train_test_split(
+                self.data, train_size=self.train_size, random_state=0, stratify=stratify
+            )
+            train_group_ids = None
+        else:
+            train_idx, _ = train_test_indices(
+                len(self),
+                train_size=self.train_size,
+                seed=self.random_state,
+                groups=self.group_ids,
+            )
+            train_data = self.data.iloc[train_idx]
+            train_group_ids = self.group_ids[train_idx]
         return self.decorate(
             train_data.reset_index(drop=True),
+            group_ids=train_group_ids,
         )
 
     def test(self) -> "DataLoader":
         stratify = self.data[self.target_column]
-        _, test_data = train_test_split(
-            self.data,
-            train_size=self.train_size,
-            random_state=0,
-            stratify=stratify,
-        )
+        if self.group_ids is None:
+            _, test_data = train_test_split(
+                self.data,
+                train_size=self.train_size,
+                random_state=0,
+                stratify=stratify,
+            )
+            test_group_ids = None
+        else:
+            _, test_idx = train_test_indices(
+                len(self),
+                train_size=self.train_size,
+                seed=self.random_state,
+                groups=self.group_ids,
+            )
+            test_data = self.data.iloc[test_idx]
+            test_group_ids = self.group_ids[test_idx]
         return self.decorate(
             test_data.reset_index(drop=True),
+            group_ids=test_group_ids,
         )
 
     def fillna(self, value: Any) -> "DataLoader":
@@ -718,6 +975,8 @@ class TimeSeriesDataLoader(DataLoader):
     Example:
         >>> TODO
     """
+
+    supports_group_ids = True
 
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
     def __init__(
@@ -802,6 +1061,9 @@ class TimeSeriesDataLoader(DataLoader):
     def shape(self) -> tuple:
         return self.data["seq_data"].shape
 
+    def _sample_count(self) -> int:
+        return len(self.data["static_data"])
+
     @property
     def columns(self) -> list:
         return self.data["seq_data"].columns
@@ -843,13 +1105,22 @@ class TimeSeriesDataLoader(DataLoader):
         for key in self.seq_info:
             generic_info[key] = self.seq_info[key]
 
+        if self.group_ids is not None:
+            generic_info["group_ids"] = self.group_ids.tolist()
+
         return generic_info
 
     def __len__(self) -> int:
         return len(self.data["seq_data"])
 
-    def decorate(self, data: Any) -> "DataLoader":
+    def decorate(
+        self, data: Any, group_ids: Optional[Any] = None
+    ) -> "DataLoader":
         static_data, temporal_data, observation_times, outcome = data
+        if self.group_ids is not None and group_ids is None:
+            raise ValueError(
+                "Grouped time-series decoration requires explicit group_ids"
+            )
 
         return TimeSeriesDataLoader(
             temporal_data,
@@ -862,15 +1133,27 @@ class TimeSeriesDataLoader(DataLoader):
             random_state=self.random_state,
             train_size=self.train_size,
             seq_offset=self.seq_offset,
+            group_ids=group_ids,
+        )
+
+    def _groups_for_sequence_frame(self, data: pd.DataFrame) -> Optional[np.ndarray]:
+        if self.group_ids is None:
+            return None
+        return _sequence_group_ids(
+            self.group_ids,
+            data,
+            self.seq_info["seq_id_feature"],
+            self.seq_offset,
         )
 
     def unpack_and_decorate(self, data: pd.DataFrame) -> "DataLoader":
+        group_ids = self._groups_for_sequence_frame(data)
         unpacked_data = TimeSeriesDataLoader.unpack_raw_data(
             data,
             self.info(),
         )
 
-        return self.decorate(unpacked_data)
+        return self.decorate(unpacked_data, group_ids=group_ids)
 
     def satisfies(self, constraints: Constraints) -> bool:
         seq_df = self.dataframe()
@@ -888,6 +1171,14 @@ class TimeSeriesDataLoader(DataLoader):
 
     @staticmethod
     def from_info(data: pd.DataFrame, info: dict) -> "DataLoader":
+        group_ids = info.get("group_ids")
+        if group_ids is not None:
+            group_ids = _sequence_group_ids(
+                group_ids,
+                data,
+                info["seq_id_feature"],
+                info["seq_offset"],
+            )
         (
             static_data,
             temporal_data,
@@ -907,6 +1198,7 @@ class TimeSeriesDataLoader(DataLoader):
             fairness_column=info["fairness_column"],
             fill=info["fill"],
             seq_offset=info["seq_offset"],
+            group_ids=group_ids,
         )
 
     def unpack(self, as_numpy: bool = False, pad: bool = False) -> Any:
@@ -938,9 +1230,9 @@ class TimeSeriesDataLoader(DataLoader):
             mask = np.ones((len(temporal_data), longest_observation_seq, 5), dtype=bool)
             for i, arr in enumerate(temporal_data):
                 padded_temporal_data[i, : arr.shape[0], :] = arr  # Copy the actual data
-                mask[
-                    i, : arr.shape[0], :
-                ] = False  # Set mask to False where actual data is present
+                mask[i, : arr.shape[0], :] = (
+                    False  # Set mask to False where actual data is present
+                )
 
             masked_temporal_data = ma.masked_array(padded_temporal_data, mask)
             return (
@@ -986,23 +1278,25 @@ class TimeSeriesDataLoader(DataLoader):
 
     def train(self) -> "DataLoader":
         # TODO: stratify
-        ids = self.ids()
-        train_ids, _ = train_test_split(
-            ids,
+        ids = np.asarray(self.ids())
+        train_idx, _ = train_test_indices(
+            len(ids),
             train_size=self.train_size,
-            random_state=self.random_state,
+            seed=self.random_state,
+            groups=self.group_ids,
         )
-        return self.unpack_and_decorate(self.filter_ids(train_ids))
+        return self.unpack_and_decorate(self.filter_ids(ids[train_idx]))
 
     def test(self) -> "DataLoader":
         # TODO: stratify
-        ids = self.ids()
-        _, test_ids = train_test_split(
-            ids,
+        ids = np.asarray(self.ids())
+        _, test_idx = train_test_indices(
+            len(ids),
             train_size=self.train_size,
-            random_state=self.random_state,
+            seed=self.random_state,
+            groups=self.group_ids,
         )
-        return self.unpack_and_decorate(self.filter_ids(test_ids))
+        return self.unpack_and_decorate(self.filter_ids(ids[test_idx]))
 
     def sample(self, count: int, random_state: int = 0) -> "DataLoader":
         ids = self.ids()
@@ -1293,6 +1587,8 @@ class TimeSeriesDataLoader(DataLoader):
                 real_tidx += 1
 
         seq_df = pd.DataFrame(seq, columns=cols)
+        for raw_col, packed_col in zip(raw_outcome_features, outcome_features):
+            seq_df[packed_col] = seq_df[packed_col].astype(outcome[raw_col].dtype)
         info = {
             "seq_static_features": static_features,
             "seq_temporal_features": temporal_features,
@@ -1440,7 +1736,14 @@ class TimeSeriesSurvivalDataLoader(TimeSeriesDataLoader):
         if len(time_horizons) == 0:
             time_horizons = np.linspace(T.min(), T.max(), num=5)[1:-1].tolist()
         self.time_horizons = time_horizons
-        outcome = pd.concat([pd.Series(T), pd.Series(E)], axis=1)
+        event = pd.Series(E)
+        try:
+            event = event.astype("int64")
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "Time-series survival event labels must be integer-coded"
+            ) from exc
+        outcome = pd.concat([pd.Series(T), event], axis=1)
         outcome.columns = [self.time_to_event_col, self.event_col]
 
         self.fill = np.nan
@@ -1471,8 +1774,14 @@ class TimeSeriesSurvivalDataLoader(TimeSeriesDataLoader):
 
         return parent_info
 
-    def decorate(self, data: Any) -> "DataLoader":
+    def decorate(
+        self, data: Any, group_ids: Optional[Any] = None
+    ) -> "DataLoader":
         static_data, temporal_data, observation_times, outcome = data
+        if self.group_ids is not None and group_ids is None:
+            raise ValueError(
+                "Grouped time-series survival decoration requires explicit group_ids"
+            )
         if self.time_to_event_col not in outcome:
             raise ValueError(
                 f"Survival outcome is missing tte column {self.time_to_event_col}"
@@ -1495,10 +1804,19 @@ class TimeSeriesSurvivalDataLoader(TimeSeriesDataLoader):
             time_horizons=self.time_horizons,
             train_size=self.train_size,
             seq_offset=self.seq_offset,
+            group_ids=group_ids,
         )
 
     @staticmethod
     def from_info(data: pd.DataFrame, info: dict) -> "DataLoader":
+        group_ids = info.get("group_ids")
+        if group_ids is not None:
+            group_ids = _sequence_group_ids(
+                group_ids,
+                data,
+                info["seq_id_feature"],
+                info["seq_offset"],
+            )
         (
             static_data,
             temporal_data,
@@ -1519,6 +1837,7 @@ class TimeSeriesSurvivalDataLoader(TimeSeriesDataLoader):
             fairness_column=info["fairness_column"],
             time_horizons=info["time_horizons"],
             seq_offset=info["seq_offset"],
+            group_ids=group_ids,
         )
 
     def unpack(self, as_numpy: bool = False, pad: bool = False) -> Any:
@@ -1566,25 +1885,29 @@ class TimeSeriesSurvivalDataLoader(TimeSeriesDataLoader):
     def train(self) -> "DataLoader":
         stratify = self.data["outcome"][self.event_col]
 
-        ids = self.ids()
-        train_ids, _ = train_test_split(
-            ids,
+        ids = np.asarray(self.ids())
+        train_idx, _ = train_test_indices(
+            len(ids),
             train_size=self.train_size,
-            random_state=self.random_state,
-            stratify=stratify,
+            seed=self.random_state,
+            y=stratify,
+            groups=self.group_ids,
+            stratified=self.group_ids is None,
         )
-        return self.unpack_and_decorate(self.filter_ids(train_ids))
+        return self.unpack_and_decorate(self.filter_ids(ids[train_idx]))
 
     def test(self) -> "DataLoader":
         stratify = self.data["outcome"][self.event_col]
-        ids = self.ids()
-        _, test_ids = train_test_split(
-            ids,
+        ids = np.asarray(self.ids())
+        _, test_idx = train_test_indices(
+            len(ids),
             train_size=self.train_size,
-            random_state=self.random_state,
-            stratify=stratify,
+            seed=self.random_state,
+            y=stratify,
+            groups=self.group_ids,
+            stratified=self.group_ids is None,
         )
-        return self.unpack_and_decorate(self.filter_ids(test_ids))
+        return self.unpack_and_decorate(self.filter_ids(ids[test_idx]))
 
 
 class ImageDataLoader(DataLoader):
@@ -1616,6 +1939,8 @@ class ImageDataLoader(DataLoader):
         >>> )
 
     """
+
+    supports_group_ids = True
 
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
     def __init__(
@@ -1689,7 +2014,7 @@ class ImageDataLoader(DataLoader):
         return x
 
     def info(self) -> dict:
-        return {
+        info = {
             "data_type": self.data_type,
             "len": len(self),
             "train_size": self.train_size,
@@ -1698,23 +2023,32 @@ class ImageDataLoader(DataLoader):
             "channels": self.channels,
             "random_state": self.random_state,
         }
+        if self.group_ids is not None:
+            info["group_ids"] = self.group_ids.tolist()
+        return info
 
     def __len__(self) -> int:
         return len(self.data)
 
-    def decorate(self, data: Any) -> "DataLoader":
+    def decorate(
+        self, data: Any, group_ids: Optional[Any] = None
+    ) -> "DataLoader":
+        if self.group_ids is not None and group_ids is None:
+            raise ValueError("Grouped image decoration requires explicit group_ids")
         return ImageDataLoader(
             data,
             random_state=self.random_state,
             train_size=self.train_size,
             height=self.height,
             width=self.width,
+            group_ids=group_ids,
         )
 
     def sample(self, count: int, random_state: int = 0) -> "DataLoader":
         idxs = np.random.choice(len(self), count, replace=False)
         subset = FlexibleDataset(self.data.data, indices=idxs)
-        return self.decorate(subset)
+        group_ids = None if self.group_ids is None else self.group_ids[idxs]
+        return self.decorate(subset, group_ids=group_ids)
 
     @staticmethod
     def from_info(data: torch.utils.data.Dataset, info: dict) -> "ImageDataLoader":
@@ -1727,6 +2061,7 @@ class ImageDataLoader(DataLoader):
             height=info["height"],
             width=info["width"],
             random_state=info["random_state"],
+            group_ids=info.get("group_ids"),
         )
 
     def __getitem__(self, index: Union[list, int, str]) -> Any:
@@ -1736,25 +2071,28 @@ class ImageDataLoader(DataLoader):
         return self.numpy()[index]
 
     def _train_test_split(self) -> Tuple:
-        indices = np.arange(len(self.data))
         _, stratify = self.data.numpy()
 
-        return train_test_split(
-            indices,
+        return train_test_indices(
+            len(self),
             train_size=self.train_size,
-            random_state=self.random_state,
-            stratify=stratify,
+            seed=self.random_state,
+            y=stratify,
+            groups=self.group_ids,
+            stratified=self.group_ids is None,
         )
 
     def train(self) -> "DataLoader":
         train_idx, _ = self._train_test_split()
         subset = FlexibleDataset(self.data.data, indices=train_idx)
-        return self.decorate(subset)
+        group_ids = None if self.group_ids is None else self.group_ids[train_idx]
+        return self.decorate(subset, group_ids=group_ids)
 
     def test(self) -> "DataLoader":
         _, test_idx = self._train_test_split()
         subset = FlexibleDataset(self.data.data, indices=test_idx)
-        return self.decorate(subset)
+        group_ids = None if self.group_ids is None else self.group_ids[test_idx]
+        return self.decorate(subset, group_ids=group_ids)
 
     def compress(
         self,

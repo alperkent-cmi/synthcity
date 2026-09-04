@@ -227,7 +227,7 @@ class TabDDPMPlugin(Plugin):
             self.expecting_conditional = True
 
         # NOTE: cond may also be included in the dataframe
-        self.model.fit(df, cond, **kwargs)
+        self.model.fit(df, cond, groups=X.group_ids, **kwargs)
         self.loss_history = self.model.loss_history
         self.validation_history = self.model.val_history
 

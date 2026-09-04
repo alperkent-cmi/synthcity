@@ -408,12 +408,22 @@ class TimeSeriesVAE(nn.Module):
         ).to(device)
 
     def fit(
-        self, static: np.ndarray, temporal: np.ndarray, observation_times: np.ndarray
+        self,
+        static: np.ndarray,
+        temporal: np.ndarray,
+        observation_times: np.ndarray,
+        groups: Optional[Any] = None,
     ) -> Any:
+        group_values = None if groups is None else list(groups)
+        if group_values is not None and len(group_values) != len(static):
+            raise ValueError(
+                "Time-series groups must align with the number of sequences: "
+                f"groups={len(group_values)}, sequences={len(static)}"
+            )
         static_t = self._check_tensor(static).float()
         temporal_t = self._check_tensor(temporal).float()
         horizons_t = self._check_tensor(observation_times).float()
-        self._train(static_t, temporal_t, horizons_t)
+        self._train(static_t, temporal_t, horizons_t, groups=group_values)
 
         return self
 
@@ -515,8 +525,17 @@ class TimeSeriesVAE(nn.Module):
 
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
     def _train(
-        self, static: Tensor, temporal: Tensor, observation_times: Tensor
+        self,
+        static: Tensor,
+        temporal: Tensor,
+        observation_times: Tensor,
+        groups: Optional[Any] = None,
     ) -> Any:
+        if groups is not None and len(groups) != len(static):
+            raise ValueError(
+                "Time-series groups must align with the number of sequences: "
+                f"groups={len(groups)}, sequences={len(static)}"
+            )
         loader = self._dataloader(static, temporal, observation_times)
 
         optimizer = Adam(

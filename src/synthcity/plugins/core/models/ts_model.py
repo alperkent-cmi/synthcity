@@ -24,6 +24,7 @@ from synthcity.plugins.core.models.factory import get_nonlin
 from synthcity.plugins.core.models.layers import MultiActivationHead
 from synthcity.plugins.core.models.mlp import MLP
 from synthcity.utils.constants import DEVICE
+from synthcity.utils.evaluation import train_test_indices
 from synthcity.utils.reproducibility import enable_reproducible_results
 from synthcity.utils.samplers import ImbalancedDatasetSampler
 
@@ -327,17 +328,29 @@ class TimeSeriesModel(nn.Module):
         temporal_data: Union[List, np.ndarray],
         observation_times: Union[List, np.ndarray],
         outcome: Union[List, np.ndarray],
+        groups: Optional[Any] = None,
     ) -> Any:
+        group_values = None if groups is None else list(groups)
+        if group_values is not None and len(group_values) != len(static_data):
+            raise ValueError(
+                "Time-series groups must align with the number of sequences: "
+                f"groups={len(group_values)}, sequences={len(static_data)}"
+            )
         (
             static_data_t,
             temporal_data_t,
             observation_times_t,
             outcome_t,
-            _,
+            window_batches,
         ) = self._prepare_input(static_data, temporal_data, observation_times, outcome)
 
         return self._train(
-            static_data_t, temporal_data_t, observation_times_t, outcome_t
+            static_data_t,
+            temporal_data_t,
+            observation_times_t,
+            outcome_t,
+            groups=group_values,
+            window_batches=window_batches,
         )
 
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
@@ -347,18 +360,30 @@ class TimeSeriesModel(nn.Module):
         temporal_data: List[torch.Tensor],
         observation_times: List[torch.Tensor],
         outcome: List[torch.Tensor],
+        window_batches: Dict[int, List[int]],
+        groups: Optional[Any] = None,
     ) -> Any:
         patience = 0
         prev_error = np.inf
 
         train_dataloaders = []
         test_dataloaders = []
+        group_values = None
+        window_lengths = list(window_batches)
+        if groups is not None:
+            group_list = list(groups)
+            group_values = np.empty(len(group_list), dtype=object)
+            group_values[:] = group_list
         for widx in range(len(temporal_data)):
+            window_groups = None
+            if group_values is not None:
+                window_groups = group_values[window_batches[window_lengths[widx]]]
             train_dl, test_dl = self.dataloader(
                 static_data[widx],
                 temporal_data[widx],
                 observation_times[widx],
                 outcome[widx],
+                groups=window_groups,
             )
             train_dataloaders.append(train_dl)
             test_dataloaders.append(test_dl)
@@ -422,30 +447,57 @@ class TimeSeriesModel(nn.Module):
         temporal_data: torch.Tensor,
         observation_times: torch.Tensor,
         outcome: torch.Tensor,
+        groups: Optional[Any] = None,
     ) -> DataLoader:
-        stratify = None
-        _, out_counts = torch.unique(outcome, return_counts=True)
-        if out_counts.min() > 1:
-            stratify = outcome.cpu()
+        if groups is None:
+            stratify = None
+            _, out_counts = torch.unique(outcome, return_counts=True)
+            if out_counts.min() > 1:
+                stratify = outcome.cpu()
 
-        (
-            static_data_train,
-            static_data_test,
-            temporal_data_train,
-            temporal_data_test,
-            observation_times_train,
-            observation_times_test,
-            outcome_train,
-            outcome_test,
-        ) = train_test_split(
-            static_data.cpu(),
-            temporal_data.cpu(),
-            observation_times.cpu(),
-            outcome.cpu(),
-            train_size=self.train_ratio,
-            random_state=self.random_state,
-            stratify=stratify,
-        )
+            (
+                static_data_train,
+                static_data_test,
+                temporal_data_train,
+                temporal_data_test,
+                observation_times_train,
+                observation_times_test,
+                outcome_train,
+                outcome_test,
+            ) = train_test_split(
+                static_data.cpu(),
+                temporal_data.cpu(),
+                observation_times.cpu(),
+                outcome.cpu(),
+                train_size=self.train_ratio,
+                random_state=self.random_state,
+                stratify=stratify,
+            )
+        else:
+            group_list = list(groups)
+            if len(group_list) != len(static_data):
+                raise ValueError(
+                    "Time-series validation groups must align with sequence data: "
+                    f"groups={len(group_list)}, sequences={len(static_data)}"
+                )
+            train_idx, test_idx = train_test_indices(
+                len(static_data),
+                train_size=self.train_ratio,
+                seed=self.random_state,
+                groups=group_list,
+            )
+            static_data_cpu = static_data.cpu()
+            temporal_data_cpu = temporal_data.cpu()
+            observation_times_cpu = observation_times.cpu()
+            outcome_cpu = outcome.cpu()
+            static_data_train = static_data_cpu[train_idx]
+            static_data_test = static_data_cpu[test_idx]
+            temporal_data_train = temporal_data_cpu[train_idx]
+            temporal_data_test = temporal_data_cpu[test_idx]
+            observation_times_train = observation_times_cpu[train_idx]
+            observation_times_test = observation_times_cpu[test_idx]
+            outcome_train = outcome_cpu[train_idx]
+            outcome_test = outcome_cpu[test_idx]
         train_dataset = TensorDataset(
             static_data_train.to(self.device),
             temporal_data_train.to(self.device),

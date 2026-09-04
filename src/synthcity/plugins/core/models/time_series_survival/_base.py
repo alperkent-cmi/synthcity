@@ -24,6 +24,7 @@ class TimeSeriesSurvivalPlugin(Serializable, metaclass=ABCMeta):
         observation_times: np.ndarray,
         T: np.ndarray,
         Y: np.ndarray,
+        groups: Any = None,
     ) -> Any:
         "Training logic"
         ...

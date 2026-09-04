@@ -1,4 +1,6 @@
 # stdlib
+import hashlib
+import json
 import platform
 from abc import abstractmethod
 from typing import Any, Dict, Optional, Tuple
@@ -28,6 +30,8 @@ from synthcity.plugins.core.models.survival_analysis.metrics import (
 from synthcity.utils.reproducibility import clear_cache
 from synthcity.utils.serialization import load_from_file, save_to_file
 
+METRIC_CACHE_SCHEMA_VERSION = "metric-result-v2"
+
 
 class StatisticalEvaluator(MetricEvaluator):
     """
@@ -44,21 +48,55 @@ class StatisticalEvaluator(MetricEvaluator):
         return "stats"
 
     @abstractmethod
-    def _evaluate(self, X_gt: DataLoader, X_syn: DataLoader) -> Dict:
-        ...
+    def _evaluate(self, X_gt: DataLoader, X_syn: DataLoader) -> Dict: ...
+
+    def _cache_context(self) -> Dict[str, Any]:
+        return {}
+
+    def _cache_context_digest(self) -> str:
+        encoded = json.dumps(
+            self._cache_context(),
+            sort_keys=True,
+            default=str,
+            separators=(",", ":"),
+        ).encode()
+        return hashlib.sha256(encoded).hexdigest()[:16]
 
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
     def evaluate(self, X_gt: DataLoader, X_syn: DataLoader) -> Dict:
         cache_file = (
             self._workspace
-            / f"sc_metric_cache_{self.type()}_{self.name()}_{X_gt.hash()}_{X_syn.hash()}_{self._reduction}_{platform.python_version()}.bkp"
+            / f"sc_metric_cache_{self.type()}_{self.name()}_{X_gt.hash()}_{X_syn.hash()}_{self._reduction}_{platform.python_version()}_{METRIC_CACHE_SCHEMA_VERSION}_{self._cache_context_digest()}.bkp"
         )
+        if hasattr(self, "_result_metadata"):
+            self._result_metadata = {}
         if self.use_cache(cache_file):
-            return load_from_file(cache_file)
+            cached = load_from_file(cache_file)
+            if (
+                isinstance(cached, dict)
+                and cached.get("cache_schema_version") == METRIC_CACHE_SCHEMA_VERSION
+            ):
+                if "result" not in cached or not isinstance(cached.get("metadata"), dict):
+                    raise ValueError(f"Malformed metric cache envelope at {cache_file}")
+                self._result_metadata = dict(cached["metadata"])
+                return cached["result"]
+            return cached
 
         clear_cache()
         results = self._evaluate(X_gt, X_syn)
-        save_to_file(cache_file, results)
+        metadata_getter = getattr(self, "result_metadata", None)
+        metadata = metadata_getter() if callable(metadata_getter) else {}
+        if metadata:
+            save_to_file(
+                cache_file,
+                {
+                    "cache_schema_version": METRIC_CACHE_SCHEMA_VERSION,
+                    "result": results,
+                    "metadata": metadata,
+                },
+            )
+        else:
+            save_to_file(cache_file, results)
         return results
 
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
@@ -288,13 +326,31 @@ class MaximumMeanDiscrepancy(StatisticalEvaluator):
 
 
 class JensenShannonDistance(StatisticalEvaluator):
-    """Evaluate the average Jensen-Shannon distance (metric) between two probability arrays."""
+    """Evaluate schema-aware per-variable Jensen-Shannon distances.
+
+    Categorical variables use the deterministic union of real and synthetic
+    values as their support. Continuous variables use shared edges computed
+    from both populations. The legacy ``marginal`` aggregate remains the
+    default result, while versioned variable rows and their source-table
+    metadata are retained for downstream aggregation.
+    """
+
+    output_version = "jsd_v2"
 
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
-    def __init__(self, normalize: bool = True, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        normalize: bool = True,
+        feature_types: Optional[Dict[str, str]] = None,
+        source_table: Optional[Dict[str, str]] = None,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(default_metric="marginal", **kwargs)
 
         self.normalize = normalize
+        self.feature_types = dict(feature_types or {})
+        self.source_table = dict(source_table or {})
+        self._result_metadata: Dict[str, Any] = {}
 
     @staticmethod
     def name() -> str:
@@ -304,34 +360,234 @@ class JensenShannonDistance(StatisticalEvaluator):
     def direction() -> str:
         return "minimize"
 
+    def _cache_context(self) -> Dict[str, Any]:
+        return {
+            "version": self.output_version,
+            "normalize": self.normalize,
+            "n_histogram_bins": self._n_histogram_bins,
+            "feature_types": self.feature_types,
+            "source_table": self.source_table,
+        }
+
+    @staticmethod
+    def _is_missing(value: Any) -> bool:
+        try:
+            missing = pd.isna(value)
+            return (
+                bool(missing) if not isinstance(missing, (np.ndarray, list)) else False
+            )
+        except (TypeError, ValueError):
+            return False
+
+    @classmethod
+    def _categorical_token(cls, value: Any) -> Tuple[str, str, str]:
+        if cls._is_missing(value):
+            return ("missing", "", "")
+        value_type = type(value)
+        return (
+            "value",
+            f"{value_type.__module__}.{value_type.__qualname__}",
+            repr(value),
+        )
+
+    @classmethod
+    def _categorical_counts(
+        cls,
+        real: pd.Series,
+        synthetic: pd.Series,
+    ) -> Tuple[np.ndarray, np.ndarray, list[dict[str, str]]]:
+        tokens = {
+            cls._categorical_token(value)
+            for value in pd.concat([real, synthetic], ignore_index=True).tolist()
+        }
+        support = sorted(tokens)
+        real_tokens = [cls._categorical_token(value) for value in real.tolist()]
+        synthetic_tokens = [
+            cls._categorical_token(value) for value in synthetic.tolist()
+        ]
+        real_counts = np.asarray(
+            [real_tokens.count(token) for token in support], dtype=float
+        )
+        synthetic_counts = np.asarray(
+            [synthetic_tokens.count(token) for token in support], dtype=float
+        )
+        support_metadata = [
+            {"kind": kind, "type": value_type, "repr": representation}
+            for kind, value_type, representation in support
+        ]
+        return real_counts, synthetic_counts, support_metadata
+
+    @staticmethod
+    def _numeric_values(series: pd.Series, column: str) -> np.ndarray:
+        converted = pd.to_numeric(series, errors="coerce").to_numpy(dtype=float)
+        invalid = series.notna().to_numpy() & np.isnan(converted)
+        if invalid.any():
+            raise ValueError(
+                f"Continuous column {column!r} contains non-numeric values"
+            )
+        non_missing = converted[series.notna().to_numpy()]
+        if not np.isfinite(non_missing).all():
+            raise ValueError(f"Continuous column {column!r} contains non-finite values")
+        return converted
+
+    def _continuous_counts(
+        self,
+        real: pd.Series,
+        synthetic: pd.Series,
+        column: str,
+    ) -> Tuple[np.ndarray, np.ndarray, list[float]]:
+        real_values = self._numeric_values(real, column)
+        synthetic_values = self._numeric_values(synthetic, column)
+        finite_values = np.concatenate(
+            [
+                real_values[np.isfinite(real_values)],
+                synthetic_values[np.isfinite(synthetic_values)],
+            ]
+        )
+        if len(finite_values) == 0:
+            edges = np.asarray([], dtype=float)
+            real_counts = np.asarray([float(real_values.size)], dtype=float)
+            synthetic_counts = np.asarray([float(synthetic_values.size)], dtype=float)
+            return real_counts, synthetic_counts, []
+
+        lower = float(np.min(finite_values))
+        upper = float(np.max(finite_values))
+        unique_count = len(np.unique(finite_values))
+        bin_count = max(1, min(self._n_histogram_bins, unique_count))
+        if lower == upper:
+            edges = np.asarray([lower - 0.5, upper + 0.5], dtype=float)
+        else:
+            edges = np.linspace(lower, upper, bin_count + 1)
+
+        real_finite = real_values[np.isfinite(real_values)]
+        synthetic_finite = synthetic_values[np.isfinite(synthetic_values)]
+        real_counts = np.histogram(real_finite, bins=edges)[0].astype(float)
+        synthetic_counts = np.histogram(synthetic_finite, bins=edges)[0].astype(float)
+        real_counts = np.concatenate(
+            [real_counts, np.asarray([float(np.isnan(real_values).sum())])]
+        )
+        synthetic_counts = np.concatenate(
+            [synthetic_counts, np.asarray([float(np.isnan(synthetic_values).sum())])]
+        )
+        return real_counts, synthetic_counts, edges.tolist()
+
+    def _feature_type(self, X_gt: DataLoader, column: str) -> str:
+        loader_feature_types = getattr(X_gt, "feature_types", {})
+        feature_type = self.feature_types.get(column, loader_feature_types.get(column))
+        if feature_type is None:
+            series = X_gt[column]
+            feature_type = (
+                "categorical"
+                if (
+                    pd.api.types.is_object_dtype(series)
+                    or isinstance(series.dtype, pd.CategoricalDtype)
+                    or pd.api.types.is_bool_dtype(series)
+                )
+                else "continuous"
+            )
+        if feature_type not in {"categorical", "continuous"}:
+            raise ValueError(
+                f"Unsupported feature type {feature_type!r} for column {column!r}"
+            )
+        return feature_type
+
+    def result_metadata(self) -> Dict[str, Any]:
+        return dict(self._result_metadata)
+
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
     def _evaluate_stats(
         self,
         X_gt: DataLoader,
         X_syn: DataLoader,
     ) -> Tuple[Dict, Dict, Dict]:
-        stats_gt = {}
-        stats_syn = {}
-        stats_ = {}
+        stats_gt: Dict[str, np.ndarray] = {}
+        stats_syn: Dict[str, np.ndarray] = {}
+        stats_: Dict[str, float] = {}
+        variable_metadata: Dict[str, Dict[str, Any]] = {}
 
         for col in X_gt.columns:
-            local_bins = min(self._n_histogram_bins, len(X_gt[col].unique()))
-            X_gt_bin, gt_bins = pd.cut(X_gt[col], bins=local_bins, retbins=True)
-            X_syn_bin = pd.cut(X_syn[col], bins=gt_bins)
-            stats_gt[col], stats_syn[col] = X_gt_bin.value_counts(
-                dropna=False, normalize=self.normalize
-            ).align(
-                X_syn_bin.value_counts(dropna=False, normalize=self.normalize),
-                join="outer",
-                axis=0,
-                fill_value=0,
-            )
-            stats_gt[col] += 1
-            stats_syn[col] += 1
+            feature_type = self._feature_type(X_gt, col)
+            if feature_type == "categorical":
+                real_counts, synthetic_counts, support = self._categorical_counts(
+                    X_gt[col], X_syn[col]
+                )
+                edges: list[float] = []
+            else:
+                real_counts, synthetic_counts, edges = self._continuous_counts(
+                    X_gt[col], X_syn[col], col
+                )
 
-            stats_[col] = jensenshannon(stats_gt[col], stats_syn[col])
+            if self.normalize:
+                real_distribution = (real_counts + 1) / (
+                    real_counts.sum() + len(real_counts)
+                )
+                synthetic_distribution = (synthetic_counts + 1) / (
+                    synthetic_counts.sum() + len(synthetic_counts)
+                )
+            else:
+                real_distribution = real_counts + 1
+                synthetic_distribution = synthetic_counts + 1
+            stats_gt[col] = real_distribution
+            stats_syn[col] = synthetic_distribution
+
+            stats_[col] = float(
+                jensenshannon(real_distribution, synthetic_distribution)
+            )
             if np.isnan(stats_[col]):
                 raise RuntimeError("NaNs in prediction")
+            source_table = self.source_table.get(
+                col, getattr(X_gt, "source_table", {}).get(col, "unassigned")
+            )
+            source_table = "unassigned" if source_table is None else str(source_table)
+            variable_metadata[col] = {
+                "feature_type": feature_type,
+                "source_table": source_table,
+                "support": support if feature_type == "categorical" else None,
+                "bin_edges": edges if feature_type == "continuous" else None,
+                "distance": stats_[col],
+            }
+
+        source_table_values: Dict[str, list[float]] = {}
+        source_table_variables: Dict[str, list[str]] = {}
+        for column, distance in stats_.items():
+            source_table = variable_metadata[column]["source_table"]
+            source_table_values.setdefault(source_table, []).append(float(distance))
+            source_table_variables.setdefault(source_table, []).append(column)
+        source_table_summary = {
+            source_table: {
+                "variables": variables,
+                "n_variables": len(variables),
+                "mean_distance": float(np.mean(source_table_values[source_table])),
+            }
+            for source_table, variables in source_table_variables.items()
+        }
+        source_table_macro = float(
+            np.mean([summary["mean_distance"] for summary in source_table_summary.values()])
+        )
+        max_variable = max(stats_, key=stats_.get)
+        self._result_metadata = {
+            "metric": self.name(),
+            "version": self.output_version,
+            "aggregation": self._reduction,
+            "variables": variable_metadata,
+            "aggregation_contract": {
+                "schema_version": "source-table-aggregation-v1",
+                "source_table_macro_v2": {
+                    "definition": "mean of per-source-table mean variable distances",
+                    "source_tables": source_table_summary,
+                    "value": source_table_macro,
+                },
+                "max_variable_v2": {
+                    "definition": "maximum distance across declared variables",
+                    "selected_variables": [
+                        column
+                        for column, distance in stats_.items()
+                        if distance == stats_[max_variable]
+                    ],
+                    "value": float(stats_[max_variable]),
+                },
+            },
+        }
 
         return stats_, stats_gt, stats_syn
 
@@ -342,8 +598,17 @@ class JensenShannonDistance(StatisticalEvaluator):
         X_syn: DataLoader,
     ) -> Dict:
         stats_, _, _ = self._evaluate_stats(X_gt, X_syn)
+        if not stats_:
+            raise ValueError("Jensen-Shannon distance requires at least one column")
 
-        return {"marginal": sum(stats_.values()) / len(stats_.keys())}
+        results = {"marginal": float(self.reduction()(list(stats_.values())))}
+        results.update(
+            {f"variable_v2.{column}": distance for column, distance in stats_.items()}
+        )
+        aggregation_contract = self._result_metadata["aggregation_contract"]
+        results["source_table_macro_v2"] = aggregation_contract["source_table_macro_v2"]["value"]
+        results["max_variable_v2"] = aggregation_contract["max_variable_v2"]["value"]
+        return results
 
 
 class WassersteinDistance(StatisticalEvaluator):

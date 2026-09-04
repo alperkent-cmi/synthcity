@@ -18,6 +18,7 @@ from synthcity.plugins.core.distribution import (
     IntegerDistribution,
 )
 from synthcity.utils.constants import DEVICE
+from synthcity.utils.evaluation import train_test_indices
 from synthcity.utils.reproducibility import enable_reproducible_results
 
 # synthcity relative
@@ -58,7 +59,7 @@ class DeephitSurvivalAnalysis(SurvivalAnalysisPlugin):
 
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
     def fit(
-        self, X: pd.DataFrame, T: pd.Series, E: pd.Series
+        self, X: pd.DataFrame, T: pd.Series, E: pd.Series, groups: Any = None
     ) -> "SurvivalAnalysisPlugin":
         if (E.unique() == [0]).all():
             raise RuntimeError("The input contains only censored data")
@@ -66,10 +67,23 @@ class DeephitSurvivalAnalysis(SurvivalAnalysisPlugin):
         labtrans = DeepHitSingle.label_transform(self.num_durations)
 
         X = np.asarray(X).astype("float32")
+        T = np.asarray(T)
+        E = np.asarray(E)
 
-        X_train, X_val, E_train, E_val, T_train, T_val = train_test_split(
-            X, E, T, random_state=42
-        )
+        if groups is None:
+            X_train, X_val, E_train, E_val, T_train, T_val = train_test_split(
+                X, E, T, random_state=42
+            )
+        else:
+            train_idx, validation_idx = train_test_indices(
+                len(X),
+                train_size=0.75,
+                seed=42,
+                groups=groups,
+            )
+            X_train, X_val = X[train_idx], X[validation_idx]
+            E_train, E_val = E[train_idx], E[validation_idx]
+            T_train, T_val = T[train_idx], T[validation_idx]
 
         def get_target(df: Any) -> Tuple:
             return (np.asarray(df[0]), np.asarray(df[1]))

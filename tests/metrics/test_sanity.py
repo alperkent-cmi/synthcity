@@ -143,6 +143,19 @@ def test_evaluate_avg_distance_nearest_synth_neighbor(test_plugin: Plugin) -> No
     assert isinstance(def_score, float)
 
 
+def test_nearest_neighbor_failure_is_not_converted_to_a_score(monkeypatch) -> None:
+    X, _ = load_iris(return_X_y=True, as_frame=True)
+    loader = GenericDataLoader(X)
+
+    def fail_fit(self, data):
+        raise ValueError("invalid fixture")
+
+    monkeypatch.setattr("synthcity.metrics.eval_sanity.NearestNeighbors.fit", fail_fit)
+
+    with pytest.raises(RuntimeError, match="Nearest-neighbor evaluation failed"):
+        NearestSyntheticNeighborDistance(use_cache=False).evaluate(loader, loader)
+
+
 @pytest.mark.parametrize("test_plugin", [Plugins().get("dummy_sampler")])
 def test_evaluate_close_values(test_plugin: Plugin) -> None:
     X, y = load_iris(return_X_y=True, as_frame=True)

@@ -1,6 +1,7 @@
 # stdlib
+import math
 import platform
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 # third party
 import numpy as np
@@ -8,19 +9,55 @@ import torch
 from pydantic import validate_arguments
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
-from sklearn.mixture import GaussianMixture
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
 from xgboost import XGBClassifier
 
 # synthcity absolute
 import synthcity.logger as log
 from synthcity.metrics.core import MetricEvaluator
-from synthcity.plugins.core.dataloader import DataLoader
+from synthcity.plugins.core.dataloader import DataLoader, _group_codes
 from synthcity.plugins.core.dataset import NumpyDataset
 from synthcity.plugins.core.models.convnet import suggest_image_classifier_arch
 from synthcity.plugins.core.models.mlp import MLP
 from synthcity.utils.reproducibility import clear_cache
 from synthcity.utils.serialization import load_from_file, save_to_file
+
+DETECTION_RESULT_VERSION = "auc-v2"
+
+
+def _detection_groups(
+    X_gt: DataLoader,
+    X_syn: DataLoader,
+) -> Optional[np.ndarray]:
+    gt_groups = getattr(X_gt, "group_ids", None)
+    syn_groups = getattr(X_syn, "group_ids", None)
+    if gt_groups is None and syn_groups is None:
+        return None
+    if gt_groups is None or syn_groups is None:
+        raise ValueError(
+            "Grouped detection requires group_ids for both real and synthetic populations"
+        )
+    return _group_codes(list(gt_groups) + list(syn_groups))
+
+
+def _detection_cv_splits(
+    X_gt: DataLoader,
+    X_syn: DataLoader,
+    data: np.ndarray,
+    labels: np.ndarray,
+    n_folds: int,
+    random_state: int,
+):
+    groups = _detection_groups(X_gt, X_syn)
+    if groups is None:
+        splitter = StratifiedKFold(
+            n_splits=n_folds, shuffle=True, random_state=random_state
+        )
+        return splitter.split(data, labels)
+    splitter = StratifiedGroupKFold(
+        n_splits=n_folds, shuffle=True, random_state=random_state
+    )
+    return splitter.split(data, labels, groups)
 
 
 class DetectionEvaluator(MetricEvaluator):
@@ -54,6 +91,24 @@ class DetectionEvaluator(MetricEvaluator):
         return "minimize"
 
     @staticmethod
+    def effective_auc(raw_auc: float) -> float:
+        """Return inversion-aware attacker AUC while preserving raw AUC separately."""
+        raw_auc = float(raw_auc)
+        if not math.isfinite(raw_auc) or not 0.0 <= raw_auc <= 1.0:
+            raise ValueError(f"AUC must be finite and within [0, 1], got {raw_auc!r}")
+        return max(raw_auc, 1.0 - raw_auc)
+
+    def result_metadata(self) -> dict[str, Any]:
+        return {
+            "schema_version": DETECTION_RESULT_VERSION,
+            "raw_auc_key": "raw_auc",
+            "reducer": self._reduction,
+            "effective_auc_key": "effective_auc_v2",
+            "default_key": "effective_auc_v2",
+            "chance_auc": 0.5,
+        }
+
+    @staticmethod
     def name() -> str:
         raise NotImplementedError()
 
@@ -71,7 +126,7 @@ class DetectionEvaluator(MetricEvaluator):
     ) -> Dict:
         cache_file = (
             self._workspace
-            / f"sc_metric_cache_{self.type()}_{self.name()}_{X_gt.hash()}_{X_syn.hash()}_{self._reduction}_{platform.python_version()}.bkp"
+            / f"sc_metric_cache_{self.type()}_{self.name()}_{DETECTION_RESULT_VERSION}_{X_gt.hash()}_{X_syn.hash()}_{self._reduction}_{platform.python_version()}.bkp"
         )
         if self.use_cache(cache_file):
             results = load_from_file(cache_file)
@@ -88,28 +143,46 @@ class DetectionEvaluator(MetricEvaluator):
 
         data = np.concatenate([arr_gt, arr_syn])
         labels = np.concatenate([labels_gt, labels_syn])
+        groups = _detection_groups(X_gt, X_syn)
 
         res = []
 
-        skf = StratifiedKFold(
-            n_splits=self._n_folds, shuffle=True, random_state=self._random_state
+        cv_splits = _detection_cv_splits(
+            X_gt,
+            X_syn,
+            data,
+            labels,
+            self._n_folds,
+            self._random_state,
         )
-        for train_idx, test_idx in skf.split(data, labels):
+        for train_idx, test_idx in cv_splits:
             train_data = data[train_idx]
             train_labels = labels[train_idx]
             test_data = data[test_idx]
             test_labels = labels[test_idx]
 
-            model = model_template(**model_args).fit(
-                train_data.astype(float), train_labels
-            )
+            model = model_template(**model_args)
+            if groups is not None and isinstance(model, MLP):
+                model.fit(
+                    train_data.astype(float),
+                    train_labels,
+                    groups=groups[train_idx],
+                )
+            else:
+                model.fit(train_data.astype(float), train_labels)
 
             test_pred = model.predict_proba(test_data.astype(float))[:, 1]
 
             score = roc_auc_score(test_labels, test_pred)
             res.append(score)
 
-        results = {self._reduction: float(self.reduction()(res))}
+        raw_auc = float(self.reduction()(res))
+        results = {
+            self._reduction: raw_auc,
+            "mean": float(np.mean(res)),
+            "raw_auc": raw_auc,
+            "effective_auc_v2": self.effective_auc(raw_auc),
+        }
         log.info(
             f" Synthetic-real data discrimination using {self.name()}. AUCROC : {results}"
         )
@@ -124,7 +197,7 @@ class DetectionEvaluator(MetricEvaluator):
         X_gt: DataLoader,
         X_syn: DataLoader,
     ) -> float:
-        return self.evaluate(X_gt, X_syn)[self._reduction]
+        return self.evaluate(X_gt, X_syn)["effective_auc_v2"]
 
 
 class SyntheticDetectionXGB(DetectionEvaluator):
@@ -193,7 +266,7 @@ class SyntheticDetectionMLP(DetectionEvaluator):
 
         cache_file = (
             self._workspace
-            / f"sc_metric_cache_{self.type()}_{self.name()}_{X_gt.hash()}_{X_syn.hash()}_{self._reduction}_{platform.python_version()}.bkp"
+            / f"sc_metric_cache_{self.type()}_{self.name()}_{DETECTION_RESULT_VERSION}_{X_gt.hash()}_{X_syn.hash()}_{self._reduction}_{platform.python_version()}.bkp"
         )
         if self.use_cache(cache_file):
             results = load_from_file(cache_file)
@@ -209,12 +282,18 @@ class SyntheticDetectionMLP(DetectionEvaluator):
         labels_gt = np.asarray([0] * len(X_gt))
         labels_syn = np.asarray([1] * len(X_syn))
         labels = np.concatenate([labels_gt, labels_syn])
+        groups = _detection_groups(X_gt, X_syn)
 
-        skf = StratifiedKFold(
-            n_splits=self._n_folds, shuffle=True, random_state=self._random_state
+        cv_splits = _detection_cv_splits(
+            X_gt,
+            X_syn,
+            data,
+            labels,
+            self._n_folds,
+            self._random_state,
         )
         res = []
-        for train_idx, test_idx in skf.split(data, labels):
+        for train_idx, test_idx in cv_splits:
             train_X = data[train_idx]
             train_y = labels[train_idx]
             test_X = data[test_idx]
@@ -228,13 +307,22 @@ class SyntheticDetectionMLP(DetectionEvaluator):
             )
             train_dataset = NumpyDataset(train_X, train_y)
 
-            clf.fit(train_dataset)
+            clf.fit(
+                train_dataset,
+                groups=None if groups is None else groups[train_idx],
+            )
             test_pred = clf.predict_proba(torch.from_numpy(test_X))[:, 1].cpu().numpy()
 
             score = roc_auc_score(test_y, test_pred)
             res.append(score)
 
-        results = {self._reduction: float(self.reduction()(res))}
+        raw_auc = float(self.reduction()(res))
+        results = {
+            self._reduction: raw_auc,
+            "mean": float(np.mean(res)),
+            "raw_auc": raw_auc,
+            "effective_auc_v2": self.effective_auc(raw_auc),
+        }
         log.info(
             f" Synthetic-real data discrimination using {self.name()}. AUCROC : {results}"
         )
@@ -326,13 +414,8 @@ class SyntheticDetectionGMM(DetectionEvaluator):
         X_gt: DataLoader,
         X_syn: DataLoader,
     ) -> Dict:
-        model_args = {
-            "n_components": min(10, len(X_gt)),
-            "random_state": self._random_state,
-        }
-        return self._evaluate_detection_generic(
-            GaussianMixture,
-            X_gt,
-            X_syn,
-            **model_args,
+        del X_gt, X_syn
+        raise RuntimeError(
+            "SyntheticDetectionGMM is audit-only: GaussianMixture does not provide "
+            "a valid binary real-versus-synthetic detector contract"
         )

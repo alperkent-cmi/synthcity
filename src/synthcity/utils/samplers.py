@@ -12,10 +12,13 @@ from sklearn.model_selection import train_test_split
 # synthcity absolute
 from synthcity.plugins.core.models.tabular_encoder import FeatureInfo
 from synthcity.utils.constants import DEVICE
+from synthcity.utils.evaluation import train_test_indices
 
 
 class BaseSampler(torch.utils.data.sampler.Sampler):
     """DataSampler samples the conditional vector and corresponding data."""
+
+    supports_group_ids = False
 
     def get_dataset_conditionals(self) -> np.ndarray:
         return None
@@ -88,6 +91,8 @@ class ImbalancedDatasetSampler(BaseSampler):
 class ConditionalDatasetSampler(BaseSampler):
     """DataSampler samples the conditional vector and corresponding data."""
 
+    supports_group_ids = True
+
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
@@ -95,13 +100,31 @@ class ConditionalDatasetSampler(BaseSampler):
         output_info: List[FeatureInfo],
         device: Any = DEVICE,
         train_size: float = 0.8,
+        groups: Any = None,
+        random_state: int = 0,
     ) -> None:
         self._device = device
 
         indices = np.arange(0, len(data))
-        self._train_idx, self._test_idx = train_test_split(
-            indices, train_size=train_size
-        )
+        if groups is None:
+            self.group_ids = None
+            self._train_idx, self._test_idx = train_test_split(
+                indices, train_size=train_size
+            )
+        else:
+            values = list(groups)
+            if len(values) != len(data):
+                raise ValueError(
+                    f"groups length {len(values)} does not match data length {len(data)}"
+                )
+            self.group_ids = np.empty(len(values), dtype=object)
+            self.group_ids[:] = values
+            self._train_idx, self._test_idx = train_test_indices(
+                len(data),
+                train_size=train_size,
+                seed=random_state,
+                groups=self.group_ids,
+            )
         self._train_mapping = {
             old_idx: new_idx for new_idx, old_idx in enumerate(self._train_idx)
         }

@@ -1,13 +1,23 @@
 # third party
+import numpy as np
 import pandas as pd
 import pytest
 from sklearn.datasets import load_iris
+import torch
+from torch.utils.data import TensorDataset
 
 # synthcity absolute
 from synthcity.benchmark.utils import augment_data
 from synthcity.metrics import Metrics, WeightedMetrics
+from synthcity.metrics.eval_detection import _detection_cv_splits
 from synthcity.plugins import Plugins
-from synthcity.plugins.core.dataloader import GenericDataLoader
+from synthcity.plugins.core.dataloader import (
+    GenericDataLoader,
+    ImageDataLoader,
+    Syn_SeqDataLoader,
+    TimeSeriesDataLoader,
+    TimeSeriesSurvivalDataLoader,
+)
 
 
 @pytest.mark.parametrize("test_plugin", ["dummy_sampler", "marginal_distributions"])
@@ -40,9 +50,215 @@ def test_basic(test_plugin: str) -> None:
             "rounds",
             "durations",
             "errors",
+            "error_types",
+            "error_messages",
             "direction",
         ]
     )
+
+
+def test_grouped_detection_cv_never_splits_a_group() -> None:
+    real = pd.DataFrame(
+        {"value": np.arange(8), "target": [0, 0, 1, 1, 0, 0, 1, 1]}
+    )
+    synthetic = pd.DataFrame(
+        {"value": np.arange(8, 16), "target": [0, 0, 1, 1, 0, 0, 1, 1]}
+    )
+    real_groups = ["real-1", "real-1", "real-2", "real-2", "real-3", "real-3", "real-4", "real-4"]
+    synthetic_groups = [
+        ("synthetic", index) for index in range(len(synthetic))
+    ]
+    real_loader = GenericDataLoader(real, target_column="target", group_ids=real_groups)
+    synthetic_loader = GenericDataLoader(
+        synthetic, target_column="target", group_ids=synthetic_groups
+    )
+    data = np.concatenate([real_loader.numpy(), synthetic_loader.numpy()])
+    labels = np.concatenate(
+        [np.zeros(len(real_loader), dtype=int), np.ones(len(synthetic_loader), dtype=int)]
+    )
+    groups = real_groups + synthetic_groups
+
+    for train_idx, test_idx in _detection_cv_splits(
+        real_loader, synthetic_loader, data, labels, n_folds=2, random_state=7
+    ):
+        assert set(groups[index] for index in train_idx).isdisjoint(
+            groups[index] for index in test_idx
+        )
+
+
+def test_grouped_non_tabular_evaluation_materializes_group_unsafe_status() -> None:
+    frame = pd.DataFrame({"value": np.arange(4), "target": [0, 1, 0, 1]})
+    groups = ["patient-a", "patient-a", "patient-b", "patient-b"]
+    loader = GenericDataLoader(frame, target_column="target", group_ids=groups)
+
+    report = Metrics.evaluate(
+        loader,
+        loader,
+        task_type="time_series",
+        group_mode="patient_group",
+        metrics={"sanity": ["common_rows_proportion"]},
+        use_cache=False,
+    )
+
+    assert list(report.index) == ["sanity.common_rows_proportion"]
+    assert report.loc["sanity.common_rows_proportion", "error_types"] == "GroupUnsafe"
+    assert report.attrs["group_safety"]["status"] == "group_unsafe"
+
+
+def test_grouped_syn_seq_evaluation_blocks_before_loader_reconstruction() -> None:
+    frame = pd.DataFrame({"value": np.arange(4), "target": [0, 1, 0, 1]})
+    loader = Syn_SeqDataLoader(frame, target_column="target", verbose=False)
+
+    report = Metrics.evaluate(
+        loader,
+        loader,
+        task_type="classification",
+        group_mode="patient_group",
+        metrics={"sanity": ["common_rows_proportion"]},
+        use_cache=False,
+    )
+
+    assert list(report.index) == ["sanity.common_rows_proportion"]
+    assert report.loc["sanity.common_rows_proportion", "error_types"] == "GroupUnsafe"
+    assert report.attrs["group_safety"] == {
+        "schema_version": "group-safety-v1",
+        "status": "group_unsafe",
+        "group_mode": "patient_group",
+        "task_type": "classification",
+        "reason": (
+            "Patient-group SynthCity evaluation is not supported for loader type(s) "
+            "['syn_seq']; metric internals require a group-aware implementation"
+        ),
+        "loader_types": {"X_gt": "syn_seq", "X_syn": "syn_seq"},
+        "metrics": ["sanity.common_rows_proportion"],
+    }
+
+
+def test_patient_group_evaluation_without_group_ids_is_blocked() -> None:
+    frame = pd.DataFrame({"value": np.arange(4), "target": [0, 1, 0, 1]})
+    loader = GenericDataLoader(frame, target_column="target")
+
+    report = Metrics.evaluate(
+        loader,
+        loader,
+        group_mode="patient_group",
+        metrics={"sanity": ["common_rows_proportion"]},
+        use_cache=False,
+    )
+
+    safety = report.attrs["group_safety"]
+    assert safety["status"] == "group_unsafe"
+    assert "aligned group IDs" in safety["reason"]
+    assert safety["loader_types"] == {"X_gt": "generic", "X_syn": "generic"}
+
+
+@pytest.mark.parametrize(
+    "loader_type",
+    ["syn_seq", "images", "time_series", "time_series_survival"],
+)
+def test_grouped_unsupported_modalities_materialize_group_unsafe_status(loader_type: str) -> None:
+    if loader_type == "syn_seq":
+        frame = pd.DataFrame({"value": np.arange(4), "target": [0, 1, 0, 1]})
+        loader = Syn_SeqDataLoader(frame, target_column="target", verbose=False)
+    elif loader_type == "images":
+        loader = ImageDataLoader(
+            TensorDataset(torch.zeros((4, 1, 4, 4)), torch.tensor([0, 1, 0, 1]))
+        )
+    elif loader_type == "time_series":
+        loader = TimeSeriesDataLoader(
+            temporal_data=[pd.DataFrame({"value": [0.0, 1.0]}) for _ in range(4)],
+            observation_times=[[0.0, 1.0] for _ in range(4)],
+        )
+    else:
+        loader = TimeSeriesSurvivalDataLoader(
+            temporal_data=[pd.DataFrame({"value": [0.0, 1.0]}) for _ in range(4)],
+            observation_times=[[0.0, 1.0] for _ in range(4)],
+            T=np.array([1.0, 2.0, 3.0, 4.0]),
+            E=np.array([0, 1, 0, 1]),
+        )
+
+    report = Metrics.evaluate(
+        loader,
+        loader,
+        group_mode="patient_group",
+        metrics={"sanity": ["common_rows_proportion"]},
+        use_cache=False,
+    )
+
+    assert report.attrs["group_safety"]["status"] == "group_unsafe"
+    assert report.attrs["group_safety"]["group_mode"] == "patient_group"
+    assert report.attrs["group_safety"]["loader_types"] == {
+        "X_gt": loader_type,
+        "X_syn": loader_type,
+    }
+    assert "group-aware implementation" in report.attrs["group_safety"]["reason"]
+
+
+def test_metrics_preserves_semantic_context_on_reports() -> None:
+    frame = pd.DataFrame({"value": np.arange(4), "target": [0, 1, 0, 1]})
+    loader = GenericDataLoader(frame, target_column="target")
+    semantic_context = {
+        "schema_version": "semantic-context-v1",
+        "task_type": "classification",
+    }
+
+    report = Metrics.evaluate(
+        loader,
+        loader,
+        metrics={"sanity": ["common_rows_proportion"]},
+        semantic_context=semantic_context,
+        use_cache=False,
+    )
+
+    assert report.attrs["semantic_context"] == semantic_context
+
+
+def test_metrics_fit_encoders_on_real_fit_loader_only(tmp_path) -> None:
+    train = pd.DataFrame(
+        {"category": ["known", "known", "known", "known"], "target": [0, 1, 0, 1]}
+    )
+    evidence = pd.DataFrame(
+        {"category": ["known", "known", "known", "known"], "target": [0, 1, 0, 1]}
+    )
+    synthetic = pd.DataFrame(
+        {"category": ["known", "known", "known", "known"], "target": [0, 1, 0, 1]}
+    )
+    train_loader = GenericDataLoader(train, target_column="target")
+    evidence_loader = GenericDataLoader(evidence, target_column="target")
+    synthetic_loader = GenericDataLoader(synthetic, target_column="target")
+
+    out = Metrics.evaluate(
+        evidence_loader,
+        synthetic_loader,
+        train_loader,
+        metrics={"sanity": ["common_rows_proportion"]},
+        workspace=tmp_path,
+        use_cache=False,
+    )
+
+    assert not out.empty
+
+
+def test_metrics_reject_unseen_evidence_category_after_train_fit(tmp_path) -> None:
+    train = pd.DataFrame(
+        {"category": ["known", "known", "known", "known"], "target": [0, 1, 0, 1]}
+    )
+    evidence = pd.DataFrame(
+        {"category": ["unseen", "known", "known", "known"], "target": [0, 1, 0, 1]}
+    )
+    synthetic = pd.DataFrame(
+        {"category": ["known", "known", "known", "known"], "target": [0, 1, 0, 1]}
+    )
+
+    with pytest.raises(ValueError, match="previously unseen labels"):
+        Metrics.evaluate(
+            GenericDataLoader(evidence, target_column="target"),
+            GenericDataLoader(synthetic, target_column="target"),
+            GenericDataLoader(train, target_column="target"),
+            metrics={"sanity": ["common_rows_proportion"]},
+            workspace=tmp_path,
+            use_cache=False,
+        )
 
 
 def test_list() -> None:
@@ -61,6 +277,7 @@ def test_list() -> None:
         "data_leakage_xgb",
         "data_leakage_linear",
     }
+    assert "detection_gmm" not in set(Metrics.list()["detection"])
 
 
 def test_attack_metric_filter(tmp_path) -> None:
@@ -78,11 +295,36 @@ def test_attack_metric_filter(tmp_path) -> None:
         Xraw,
         Xraw,
         metrics={"attack": ["data_leakage_linear"]},
+        sensitive_target_types={"sex": "categorical"},
         workspace=tmp_path,
         use_cache=False,
     )
 
     assert any(index.startswith("attack.data_leakage_linear") for index in out.index)
+
+
+def test_structural_privacy_metadata_survives_metrics_table() -> None:
+    frame = pd.DataFrame(
+        {
+            "quasi_id": list(range(10)),
+            "secret": [0, 1] * 5,
+        }
+    )
+    loader = GenericDataLoader(frame, sensitive_features=["secret"])
+
+    out = Metrics.evaluate(
+        loader,
+        loader,
+        metrics={"privacy": ["k-anonymization"]},
+        structural_n_clusters=[2],
+        structural_min_rows_per_cluster=2,
+        use_cache=False,
+    )
+
+    metadata = out.attrs["metric_metadata"]["privacy.k-anonymization"]
+    assert metadata["result_version"] == "structural-proxy-v2"
+    assert metadata["feature_selection"]["real_columns"] == ["quasi_id"]
+    assert metadata["kmeans"]["n_clusters"] == [2]
 
 
 @pytest.mark.parametrize(
@@ -137,6 +379,8 @@ def test_metric_filter(metric_filter: dict) -> None:
             "rounds",
             "durations",
             "errors",
+            "error_types",
+            "error_messages",
             "direction",
         ]
     )

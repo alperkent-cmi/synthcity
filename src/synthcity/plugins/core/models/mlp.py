@@ -17,6 +17,7 @@ from synthcity.plugins.core.models.layers import (
     SkipConnection,
 )
 from synthcity.utils.constants import DEVICE
+from synthcity.utils.evaluation import train_test_indices
 from synthcity.utils.reproducibility import enable_reproducible_results
 
 
@@ -233,11 +234,13 @@ class MLP(nn.Module):
             else:
                 self.loss = nn.MSELoss()
 
-    def fit(self, X: np.ndarray, y: np.ndarray) -> "MLP":
+    def fit(
+        self, X: np.ndarray, y: np.ndarray, groups: Any = None
+    ) -> "MLP":
         Xt = self._check_tensor(X)
         yt = self._check_tensor(y)
 
-        self._train(Xt, yt)
+        self._train(Xt, yt, groups=groups)
 
         return self
 
@@ -301,7 +304,9 @@ class MLP(nn.Module):
 
         return torch.mean(torch.Tensor(train_loss))
 
-    def _train(self, X: torch.Tensor, y: torch.Tensor) -> "MLP":
+    def _train(
+        self, X: torch.Tensor, y: torch.Tensor, groups: Any = None
+    ) -> "MLP":
         X = self._check_tensor(X).float()
         y = self._check_tensor(y).squeeze().float()
         if self.task_type == "classification":
@@ -310,12 +315,29 @@ class MLP(nn.Module):
         # Load Dataset
         dataset = TensorDataset(X, y)
 
-        train_size = int(0.8 * len(dataset))
-        test_size = len(dataset) - train_size
-        train_dataset, test_dataset = torch.utils.data.random_split(
-            dataset, [train_size, test_size]
-        )
+        if groups is None:
+            train_size = int(0.8 * len(dataset))
+            test_size = len(dataset) - train_size
+            train_dataset, test_dataset = torch.utils.data.random_split(
+                dataset, [train_size, test_size]
+            )
+        else:
+            train_idx, test_idx = train_test_indices(
+                len(dataset),
+                train_size=0.8,
+                seed=self.random_state,
+                groups=groups,
+            )
+            train_dataset = torch.utils.data.Subset(
+                dataset, train_idx.tolist()
+            )
+            test_dataset = torch.utils.data.Subset(dataset, test_idx.tolist())
         loader = DataLoader(train_dataset, batch_size=self.batch_size, pin_memory=False)
+        validation_loader = (
+            DataLoader(test_dataset, batch_size=len(test_dataset), pin_memory=False)
+            if groups is not None
+            else None
+        )
 
         # Setup the network and optimizer
 
@@ -328,7 +350,10 @@ class MLP(nn.Module):
 
             if self.early_stopping or i % self.n_iter_print == 0:
                 with torch.no_grad():
-                    X_val, y_val = test_dataset.dataset.tensors
+                    if validation_loader is None:
+                        X_val, y_val = test_dataset.dataset.tensors
+                    else:
+                        X_val, y_val = next(iter(validation_loader))
 
                     preds = self.forward(X_val).squeeze()
                     val_loss = self.loss(preds, y_val)

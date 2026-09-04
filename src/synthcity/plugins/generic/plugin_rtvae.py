@@ -213,6 +213,7 @@ class RTVAEPlugin(Plugin):
             encoder_dropout=self.encoder_dropout,
             encoder_max_clusters=self.data_encoder_max_clusters,
             dataloader_sampler=self.dataloader_sampler,
+            groups=X.group_ids,
             loss_strategy="robust_divergence",
             robust_divergence_beta=self.robust_divergence_beta,
             n_iter_min=self.n_iter_min,
@@ -220,7 +221,7 @@ class RTVAEPlugin(Plugin):
             patience=self.patience,
             device=self.device,
         )
-        self.model.fit(X.dataframe(), **kwargs)
+        self.model.fit(X.dataframe(), groups=X.group_ids, **kwargs)
 
         return self
 

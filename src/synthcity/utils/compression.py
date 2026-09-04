@@ -1,5 +1,5 @@
 # stdlib
-from typing import Dict, List
+from typing import Any, Dict, List
 
 # third party
 import pandas as pd
@@ -17,8 +17,14 @@ def compress_dataset(
     cat_limit: int = 10,
     impute: bool = True,
     score_threshold: float = 0.98,
+    groups: Any = None,
 ) -> pd.DataFrame:
     df = df.copy()
+    group_values = None if groups is None else list(groups)
+    if group_values is not None and len(group_values) != len(df):
+        raise ValueError(
+            f"groups length {len(group_values)} does not match data length {len(df)}"
+        )
     original_dtypes = df.infer_objects().dtypes
 
     if impute:
@@ -52,7 +58,9 @@ def compress_dataset(
                 depth=3,
             )
             try:
-                score = evaluate_classifier(model, X, y)["clf"]["aucroc"][0]
+                score = evaluate_classifier(
+                    model, X, y, groups=group_values
+                )["clf"]["aucroc"][0]
             except BaseException:
                 continue
 
@@ -60,7 +68,9 @@ def compress_dataset(
             model = XGBRegressor()
 
             try:
-                score = evaluate_regression(model, X, y)["clf"]["r2"][0]
+                score = evaluate_regression(
+                    model, X, y, groups=group_values
+                )["clf"]["r2"][0]
             except BaseException:
                 continue
 

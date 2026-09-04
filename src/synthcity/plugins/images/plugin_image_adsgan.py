@@ -271,7 +271,9 @@ class ImageAdsGANPlugin(Plugin):
             patience=self.patience,
             patience_metric=self.patience_metric,
         )
-        self.image_generator.fit(X.unpack(), cond=cond)
+        self.image_generator.fit(
+            X.unpack(), cond=cond, groups=X.group_ids
+        )
 
         # synthetic labels
         self.label_generator: Optional[nn.Module] = None
@@ -302,7 +304,7 @@ class ImageAdsGANPlugin(Plugin):
                 clipping_value=self.clipping_value,
                 early_stopping=self.early_stopping,
             )
-            self.label_generator.fit(X.unpack())
+            self.label_generator.fit(X.unpack(), groups=X.group_ids)
 
         return self
 

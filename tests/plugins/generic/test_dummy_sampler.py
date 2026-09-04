@@ -55,6 +55,37 @@ def test_plugin_generate(test_plugin: Plugin) -> None:
 
 
 @pytest.mark.parametrize("test_plugin", generate_fixtures(plugin_name, plugin))
+def test_grouped_generation_uses_fresh_population_group_ids(test_plugin: Plugin) -> None:
+    frame = pd.DataFrame(
+        {
+            "value": [0, 1, 2, 3],
+            "target": [0, 0, 1, 1],
+        }
+    )
+    training_groups = ["patient-a", "patient-a", "patient-b", "patient-b"]
+    test_plugin.fit(
+        GenericDataLoader(frame, target_column="target", group_ids=training_groups)
+    )
+
+    generated = test_plugin.generate(count=3, _group_namespace="synthetic")
+    reference = test_plugin.generate(count=2, _group_namespace="reference_synthetic")
+
+    assert len(generated.group_ids) == 3
+    assert len(reference.group_ids) == 2
+    assert set(generated.group_ids).isdisjoint(training_groups)
+    assert set(reference.group_ids).isdisjoint(training_groups)
+    assert set(generated.group_ids).isdisjoint(reference.group_ids)
+    assert all(
+        group_id.startswith("__synthcity_generated__synthetic__")
+        for group_id in generated.group_ids
+    )
+    assert all(
+        group_id.startswith("__synthcity_generated__reference_synthetic__")
+        for group_id in reference.group_ids
+    )
+
+
+@pytest.mark.parametrize("test_plugin", generate_fixtures(plugin_name, plugin))
 def test_plugin_generate_constraints(test_plugin: Plugin) -> None:
     X = pd.DataFrame(load_iris()["data"])
     test_plugin.fit(GenericDataLoader(X))

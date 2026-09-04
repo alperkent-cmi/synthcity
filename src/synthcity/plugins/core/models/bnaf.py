@@ -2,6 +2,7 @@
 
 # stdlib
 import math
+import inspect
 from typing import Any, Callable, Optional, Tuple, Union
 
 # third party
@@ -422,7 +423,11 @@ class Adam(torch.optim.Optimizer):
 
 class ReduceLROnPlateau(torch.optim.lr_scheduler.ReduceLROnPlateau):
     def __init__(
-        self, *args: Any, early_stopping: Optional[int] = None, **kwargs: Any
+        self,
+        *args: Any,
+        early_stopping: Optional[int] = None,
+        verbose: Optional[bool] = None,
+        **kwargs: Any,
     ) -> None:
         self.early_stopping = early_stopping
         self.early_stopping_counter = 0
@@ -430,6 +435,10 @@ class ReduceLROnPlateau(torch.optim.lr_scheduler.ReduceLROnPlateau):
         self.cooldown_counter = self.cooldown = self.wait = 0
         self.best: Any
 
+        if verbose is not None and "verbose" in inspect.signature(
+            torch.optim.lr_scheduler.ReduceLROnPlateau
+        ).parameters:
+            kwargs["verbose"] = verbose
         super().__init__(*args, **kwargs)
 
     def step(
@@ -444,7 +453,10 @@ class ReduceLROnPlateau(torch.optim.lr_scheduler.ReduceLROnPlateau):
             epoch = self.last_epoch + 1
         self.last_epoch = epoch
 
-        if self.is_better(current, self.best):
+        is_better = getattr(self, "is_better", None) or getattr(self, "_is_better", None)
+        if is_better is None:
+            raise RuntimeError("Torch ReduceLROnPlateau exposes no comparison method")
+        if is_better(current, self.best):
             self.best = current
             self.num_bad_epochs = 0
             self.early_stopping_counter = 0

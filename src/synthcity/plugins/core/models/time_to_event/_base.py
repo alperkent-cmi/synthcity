@@ -3,13 +3,39 @@ from abc import ABCMeta, abstractmethod
 from typing import Any, Dict, List
 
 # third party
+import numpy as np
 import pandas as pd
 from pydantic import validate_arguments
+from sklearn.model_selection import train_test_split
 from xgboost import XGBRegressor
 
 # synthcity absolute
 from synthcity.plugins.core.distribution import Distribution
 from synthcity.plugins.core.serializable import Serializable
+from synthcity.utils.evaluation import train_test_indices
+
+
+def _train_validation_indices(
+    n_samples: int,
+    train_size: float,
+    seed: int,
+    groups: Any = None,
+    stratify: Any = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    if groups is None:
+        return train_test_split(
+            np.arange(n_samples),
+            train_size=train_size,
+            random_state=seed,
+            stratify=stratify,
+        )
+
+    return train_test_indices(
+        n_samples,
+        train_size=train_size,
+        seed=seed,
+        groups=groups,
+    )
 
 
 class TimeToEventPlugin(Serializable, metaclass=ABCMeta):
@@ -18,7 +44,9 @@ class TimeToEventPlugin(Serializable, metaclass=ABCMeta):
 
     @abstractmethod
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
-    def fit(self, X: pd.DataFrame, T: pd.Series, Y: pd.Series) -> Any:
+    def fit(
+        self, X: pd.DataFrame, T: pd.Series, Y: pd.Series, groups: Any = None
+    ) -> Any:
         "Training logic"
         ...
 

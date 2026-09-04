@@ -98,6 +98,7 @@ class TabularFlows(nn.Module):
         encoder_max_clusters: int = 20,
         encoder_whitelist: list = [],
         device: Any = DEVICE,
+        random_state: int = 0,
         # early stopping
         n_iter_min: int = 100,
         n_iter_print: int = 10,
@@ -147,10 +148,12 @@ class TabularFlows(nn.Module):
     def fit(
         self,
         X: pd.DataFrame,
+        groups: Any = None,
     ) -> Any:
         X_enc = self.encode(X)
         self.model.fit(
             X_enc,
+            groups=groups,
         )
         return self
 

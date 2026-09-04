@@ -33,7 +33,13 @@ class CoxPHTimeToEvent(TimeToEventPlugin):
         self.model = CoxPHFitter(**kwargs)
 
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
-    def fit(self, X: pd.DataFrame, T: pd.Series, Y: pd.Series) -> "TimeToEventPlugin":
+    def fit(
+        self,
+        X: pd.DataFrame,
+        T: pd.Series,
+        Y: pd.Series,
+        groups: Any = None,
+    ) -> "TimeToEventPlugin":
         "Training logic"
         self._fit_censoring_model(X, T, Y)
 

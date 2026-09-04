@@ -217,6 +217,7 @@ class TabularGoggle(metaclass=ABCMeta):
         self,
         X: pd.DataFrame,
         encoded: bool = False,
+        groups: Any = None,
         **kwargs: Any,
     ) -> Any:
         X_enc = self.encode(X)
@@ -225,6 +226,7 @@ class TabularGoggle(metaclass=ABCMeta):
             optimiser_gl=self.optimiser_gl,
             optimiser_ga=self.optimiser_ga,
             optimiser=self.optimiser,
+            groups=groups,
             **kwargs,
         )
         return self

@@ -20,6 +20,7 @@ from tqdm import tqdm
 import synthcity.logger as log
 from synthcity.plugins.core.dataloader import DataLoader
 from synthcity.utils.constants import DEVICE
+from synthcity.utils.evaluation import train_test_indices
 from synthcity.utils.reproducibility import clear_cache, enable_reproducible_results
 
 # synthcity relative
@@ -120,6 +121,7 @@ class Goggle(nn.Module):
         optimiser_gl: Any,
         optimiser_ga: Any,
         optimiser: Any,
+        groups: Any = None,
     ) -> None:
         clear_cache()
         self.optimiser_gl = optimiser_gl
@@ -128,7 +130,7 @@ class Goggle(nn.Module):
 
         X = self._check_tensor(X).float()
 
-        X, X_val = self._train_test_split(X)
+        X, X_val = self._train_test_split(X, groups=groups)
 
         # Load Dataset
         train_loader: TorchDataLoader = self.get_dataloader(X)
@@ -277,11 +279,28 @@ class Goggle(nn.Module):
     def _train_test_split(
         self,
         X: torch.Tensor,
+        groups: Any = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        total = np.arange(0, len(X))
-        np.random.shuffle(total)
-        split = int(len(total) * 0.8)
-        train_idx, val_idx = total[:split], total[split:]
+        if self.dataloader_sampler is not None:
+            if groups is not None and not getattr(
+                self.dataloader_sampler, "supports_group_ids", False
+            ):
+                raise ValueError(
+                    "grouped validation requires a group-aware data sampler"
+                )
+            train_idx, val_idx = self.dataloader_sampler.train_test()
+        elif groups is not None:
+            train_idx, val_idx = train_test_indices(
+                len(X),
+                train_size=0.8,
+                seed=self.random_state,
+                groups=groups,
+            )
+        else:
+            total = np.arange(0, len(X))
+            np.random.shuffle(total)
+            split = int(len(total) * 0.8)
+            train_idx, val_idx = total[:split], total[split:]
 
         X_train, X_val = X[train_idx], X[val_idx]
         return X_train, X_val

@@ -114,6 +114,7 @@ class TabularVAE(nn.Module):
         n_iter_min: int = 100,
         n_iter_print: int = 10,
         patience: int = 20,
+        groups: Any = None,
     ) -> None:
         super(TabularVAE, self).__init__()
         self.columns = X.columns
@@ -141,6 +142,8 @@ class TabularVAE(nn.Module):
             dataloader_sampler = ConditionalDatasetSampler(
                 self.encoder.transform(X),
                 self.encoder.layout(),
+                groups=groups,
+                random_state=random_state,
             )
             n_units_conditional = dataloader_sampler.conditional_dimension()
 
@@ -249,6 +252,7 @@ class TabularVAE(nn.Module):
         self,
         X: pd.DataFrame,
         cond: Optional[Union[pd.DataFrame, pd.Series, np.ndarray]] = None,
+        groups: Any = None,
         **kwargs: Any,
     ) -> Any:
         X_enc = self.encode(X)
@@ -269,7 +273,7 @@ class TabularVAE(nn.Module):
                     f"Invalid conditional shape. {cond.shape} expected {len(X_enc)}"
                 )
 
-        self.model.fit(X_enc, cond, **kwargs)
+        self.model.fit(X_enc, cond, groups=groups, **kwargs)
         return self
 
     @validate_arguments(config=dict(arbitrary_types_allowed=True))

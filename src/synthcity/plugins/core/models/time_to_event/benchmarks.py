@@ -6,7 +6,6 @@ from typing import Any, Callable, Dict, List
 import numpy as np
 import optuna
 import pandas as pd
-from sklearn.model_selection import StratifiedKFold
 
 # synthcity absolute
 import synthcity.logger as log
@@ -20,6 +19,7 @@ from synthcity.utils.optimizer import (
     ParamRepeatPruner,
     create_study,
 )
+from synthcity.utils.evaluation import cross_validation_splits
 from synthcity.utils.serialization import dataframe_hash
 
 
@@ -43,9 +43,8 @@ def evaluate_model(
     E: pd.DataFrame,
     n_folds: int = 3,
     random_state: int = 0,
+    groups: Any = None,
 ) -> tuple:
-    skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
-
     local_results: dict = {
         "te_err_l1_ood": [],
         "te_err_l2_ood": [],
@@ -56,8 +55,18 @@ def evaluate_model(
     }
 
     model_template = get_model_template(model_name)
+    group_values = None if groups is None else np.asarray(list(groups), dtype=object)
 
-    for train_index, test_index in skf.split(X, E):
+    cv_splits = cross_validation_splits(
+        len(X),
+        y=E,
+        n_folds=n_folds,
+        seed=random_state,
+        groups=groups,
+        stratified=True,
+    )
+
+    for train_index, test_index in cv_splits:
         X_train = X.loc[X.index[train_index]]
         E_train = E.loc[E.index[train_index]]
         T_train = T.loc[T.index[train_index]]
@@ -65,16 +74,21 @@ def evaluate_model(
         X_test = X.loc[X.index[test_index]]
         E_test = E.loc[E.index[test_index]]
         T_test = T.loc[T.index[test_index]]
+        groups_train = None if group_values is None else group_values[train_index]
 
         model = model_template(**model_args)
 
         try:
-            model.fit(X_train, T_train, E_train)
+            if groups_train is None:
+                model.fit(X_train, T_train, E_train)
+            else:
+                model.fit(X_train, T_train, E_train, groups=groups_train)
             ood_preds = model.predict(X_test)
             id_preds = model.predict(X_train)
-        except BaseException as e:
-            log.error(f"fold failed {e}")
-            continue
+        except (TypeError, ValueError, RuntimeError) as exc:
+            raise RuntimeError(
+                f"time-to-event evaluation fold failed for {model_name}: {exc}"
+            ) from exc
 
         local_results["te_err_l1_ood"].append(
             expected_time_error(T_test, E_test, ood_preds, metric="l1")
@@ -127,16 +141,24 @@ def objective_meta(
     metric: str,
     pruner: ParamRepeatPruner,
     n_folds: int = 3,
+    groups: Any = None,
 ) -> Callable:
     def objective(trial: optuna.Trial) -> float:
         template = get_model_template(model_name)
         args = _trial_params(trial, template.hyperparameter_space())
         pruner.check_trial(trial)
         try:
-            full_score, _ = evaluate_model(model_name, args, X, T, E, n_folds=n_folds)
-        except BaseException as e:
-            log.error(f"model search failed {e}")
-            return 0
+            full_score, _ = evaluate_model(
+                model_name,
+                args,
+                X,
+                T,
+                E,
+                n_folds=n_folds,
+                groups=groups,
+            )
+        except (TypeError, ValueError, RuntimeError) as exc:
+            raise RuntimeError(f"model search failed for {model_name}: {exc}") from exc
 
         score = full_score[metric][0]
         pruner.report_score(score)
@@ -163,6 +185,7 @@ def select_uncensoring_model(
     n_trials: int = 10,
     timeout: int = 120,
     random_state: int = 0,
+    groups: Any = None,
 ) -> Any:
     metric = "c_index_ood"
 
@@ -184,7 +207,16 @@ def select_uncensoring_model(
 
         try:
             study.optimize(
-                objective_meta(model, X, T, E, metric, pruner, n_folds=n_folds),
+                objective_meta(
+                    model,
+                    X,
+                    T,
+                    E,
+                    metric,
+                    pruner,
+                    n_folds=n_folds,
+                    groups=groups,
+                ),
                 n_trials=n_trials,
                 timeout=timeout,
             )

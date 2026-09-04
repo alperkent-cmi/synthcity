@@ -112,6 +112,8 @@ class Plugin(Serializable, metaclass=ABCMeta):
 
         self.fitted = False
         self.expecting_conditional = False
+        self._active_group_namespace: Optional[str] = None
+        self._generation_group_counter = 0
 
     @staticmethod
     @abstractmethod
@@ -327,6 +329,12 @@ class Plugin(Serializable, metaclass=ABCMeta):
         if self._schema is None:
             raise RuntimeError("Fit the model first")
 
+        group_namespace = kwargs.pop("_group_namespace", None)
+        if group_namespace is not None and (
+            not isinstance(group_namespace, str) or not group_namespace
+        ):
+            raise ValueError("_group_namespace must be a non-empty string")
+
         if random_state is not None:
             enable_reproducible_results(random_state)
 
@@ -346,7 +354,12 @@ class Plugin(Serializable, metaclass=ABCMeta):
 
         syn_schema = Schema.from_constraints(gen_constraints)
 
-        X_syn = self._generate(count=count, syn_schema=syn_schema, **kwargs)
+        previous_group_namespace = self._active_group_namespace
+        self._active_group_namespace = group_namespace
+        try:
+            X_syn = self._generate(count=count, syn_schema=syn_schema, **kwargs)
+        finally:
+            self._active_group_namespace = previous_group_namespace
 
         if X_syn.is_tabular():
             if self.compress_dataset:
@@ -391,6 +404,20 @@ class Plugin(Serializable, metaclass=ABCMeta):
         """
         ...
 
+    def _generated_data_info(self, row_count: int) -> dict:
+        data_info = dict(self.data_info)
+        if data_info.get("group_ids") is None:
+            return data_info
+
+        namespace = self._active_group_namespace or "synthetic"
+        generation_number = self._generation_group_counter
+        self._generation_group_counter += 1
+        data_info["group_ids"] = [
+            f"__synthcity_generated__{namespace}__{generation_number}__{row_index}"
+            for row_index in range(row_count)
+        ]
+        return data_info
+
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
     def _safe_generate(
         self, gen_cbk: Callable, count: int, syn_schema: Schema, **kwargs: Any
@@ -425,7 +452,7 @@ class Plugin(Serializable, metaclass=ABCMeta):
 
         data_synth = self.training_schema().adapt_dtypes(data_synth).head(count)
 
-        return create_from_info(data_synth, self.data_info)
+        return create_from_info(data_synth, self._generated_data_info(len(data_synth)))
 
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
     def _safe_generate_time_series(
@@ -438,7 +465,6 @@ class Plugin(Serializable, metaclass=ABCMeta):
         constraints = syn_schema.as_constraints()
 
         data_synth = pd.DataFrame([], columns=self.training_schema().features())
-        data_info = self.data_info
         offset = 0
         seq_offset = 0
         for it in range(self.sampling_patience):
@@ -487,7 +513,10 @@ class Plugin(Serializable, metaclass=ABCMeta):
                 break
 
         data_synth = self.training_schema().adapt_dtypes(data_synth)
-        return create_from_info(data_synth, data_info)
+        return create_from_info(
+            data_synth,
+            self._generated_data_info(offset),
+        )
 
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
     def _safe_generate_images(
@@ -495,7 +524,10 @@ class Plugin(Serializable, metaclass=ABCMeta):
     ) -> DataLoader:
         data_synth = gen_cbk(count, **kwargs)
 
-        return create_from_info(data_synth, self.data_info)
+        return create_from_info(
+            data_synth,
+            self._generated_data_info(len(data_synth)),
+        )
 
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
     def schema_includes(self, other: Union[DataLoader, pd.DataFrame]) -> bool:

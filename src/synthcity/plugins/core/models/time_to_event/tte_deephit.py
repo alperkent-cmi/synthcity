@@ -8,7 +8,6 @@ import torch
 import torchtuples as tt
 from pycox.models import DeepHitSingle
 from pydantic import validate_arguments
-from sklearn.model_selection import train_test_split
 
 try:
     # third party
@@ -28,7 +27,7 @@ from synthcity.plugins.core.distribution import (
 from synthcity.utils.constants import DEVICE
 
 # synthcity relative
-from ._base import TimeToEventPlugin
+from ._base import TimeToEventPlugin, _train_validation_indices
 
 
 class DeephitTimeToEvent(TimeToEventPlugin):
@@ -66,16 +65,28 @@ class DeephitTimeToEvent(TimeToEventPlugin):
         self.batch_norm = batch_norm
 
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
-    def fit(self, X: pd.DataFrame, T: pd.Series, E: pd.Series) -> "TimeToEventPlugin":
+    def fit(
+        self,
+        X: pd.DataFrame,
+        T: pd.Series,
+        E: pd.Series,
+        groups: Any = None,
+    ) -> "TimeToEventPlugin":
         self._fit_censoring_model(X, T, E)
 
         labtrans = DeepHitSingle.label_transform(self.num_durations)
         X = np.asarray(X).astype("float32")
         T = np.asarray(T).astype(int)
 
-        X_train, X_val, E_train, E_val, T_train, T_val = train_test_split(
-            X, E, T, random_state=42
+        train_idx, validation_idx = _train_validation_indices(
+            len(X),
+            train_size=0.75,
+            seed=42,
+            groups=groups,
         )
+        X_train, X_val = X[train_idx], X[validation_idx]
+        E_train, E_val = E[train_idx], E[validation_idx]
+        T_train, T_val = T[train_idx], T[validation_idx]
 
         def get_target(df: Any) -> Tuple:
             return (np.asarray(df[0]), np.asarray(df[1]))

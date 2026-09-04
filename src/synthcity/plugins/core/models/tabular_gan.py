@@ -170,6 +170,7 @@ class TabularGAN(torch.nn.Module):
         dp_delta: Optional[float] = None,
         dp_max_grad_norm: float = 2,
         dp_secure_mode: bool = False,
+        groups: Any = None,
     ) -> None:
         super(TabularGAN, self).__init__()
         self.columns = X.columns
@@ -204,6 +205,8 @@ class TabularGAN(torch.nn.Module):
             dataloader_sampler = ConditionalDatasetSampler(
                 self.encoder.transform(X),
                 self.encoder.layout(),
+                groups=groups,
+                random_state=random_state,
             )
             n_units_conditional = dataloader_sampler.conditional_dimension()
 
@@ -331,6 +334,7 @@ class TabularGAN(torch.nn.Module):
         fake_labels_generator: Optional[Callable] = None,
         true_labels_generator: Optional[Callable] = None,
         encoded: bool = False,
+        groups: Any = None,
     ) -> Any:
         # preprocessing
         if encoded:
@@ -360,6 +364,7 @@ class TabularGAN(torch.nn.Module):
             np.asarray(cond),
             fake_labels_generator=fake_labels_generator,
             true_labels_generator=true_labels_generator,
+            groups=groups,
         )
 
         # post processing

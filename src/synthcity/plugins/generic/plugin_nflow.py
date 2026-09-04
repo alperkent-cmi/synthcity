@@ -238,6 +238,7 @@ class NormalizingFlowsPlugin(Plugin):
                 n_iter_print=self.n_iter_print,
                 patience=self.patience,
                 patience_metric=self.patience_metric,
+                random_state=self.random_state,
                 device=self.device,
             )
         else:
@@ -260,10 +261,11 @@ class NormalizingFlowsPlugin(Plugin):
                 n_iter_print=self.n_iter_print,
                 patience=self.patience,
                 patience_metric=self.patience_metric,
+                random_state=self.random_state,
                 device=self.device,
             )
 
-        self.model.fit(X.dataframe())
+        self.model.fit(X.dataframe(), groups=X.group_ids)
         return self
 
     def _generate(self, count: int, syn_schema: Schema, **kwargs: Any) -> pd.DataFrame:

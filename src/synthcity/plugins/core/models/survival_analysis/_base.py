@@ -17,7 +17,9 @@ class SurvivalAnalysisPlugin(Serializable, metaclass=ABCMeta):
 
     @abstractmethod
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
-    def fit(self, X: pd.DataFrame, T: pd.Series, Y: pd.Series) -> Any:
+    def fit(
+        self, X: pd.DataFrame, T: pd.Series, Y: pd.Series, groups: Any = None
+    ) -> Any:
         "Training logic"
         ...
 

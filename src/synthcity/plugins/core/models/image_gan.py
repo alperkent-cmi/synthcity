@@ -17,6 +17,7 @@ from synthcity.metrics.weighted_metrics import WeightedMetrics
 from synthcity.plugins.core.dataloader import ImageDataLoader
 from synthcity.plugins.core.dataset import ConditionalDataset, FlexibleDataset
 from synthcity.utils.constants import DEVICE
+from synthcity.utils.evaluation import train_test_indices
 from synthcity.utils.reproducibility import clear_cache, enable_reproducible_results
 
 
@@ -228,6 +229,7 @@ class ImageGAN(nn.Module):
         cond: Optional[torch.Tensor] = None,
         fake_labels_generator: Optional[Callable] = None,
         true_labels_generator: Optional[Callable] = None,
+        groups: Any = None,
     ) -> "ImageGAN":
         clear_cache()
 
@@ -241,6 +243,7 @@ class ImageGAN(nn.Module):
             cond=cond,
             fake_labels_generator=fake_labels_generator,
             true_labels_generator=true_labels_generator,
+            groups=groups,
         )
 
         return self
@@ -472,6 +475,7 @@ class ImageGAN(nn.Module):
         cond: Optional[torch.Tensor],
         prev_score: float,
         patience: int,
+        groups: Any = None,
     ) -> Tuple[float, int, bool]:
         save = False
         if self.patience_metric is None:
@@ -479,7 +483,7 @@ class ImageGAN(nn.Module):
 
         X_syn = self.generate(len(X), cond=cond)
         new_score = self.patience_metric.evaluate(
-            ImageDataLoader(ConditionalDataset(X)),
+            ImageDataLoader(ConditionalDataset(X), group_ids=groups),
             ImageDataLoader(ConditionalDataset(X_syn)),
         )
         score = prev_score
@@ -501,13 +505,40 @@ class ImageGAN(nn.Module):
         return score, patience, save
 
     def _train_test_split(
-        self, X: FlexibleDataset, cond: Optional[torch.Tensor] = None
+        self,
+        X: FlexibleDataset,
+        cond: Optional[torch.Tensor] = None,
+        groups: Any = None,
     ) -> Tuple:
+        self._validation_groups = None
+        group_values = None
+        if groups is not None:
+            values = list(groups)
+            if len(values) != len(X):
+                raise ValueError(
+                    f"groups length {len(values)} does not match data length {len(X)}"
+                )
+            group_values = np.empty(len(values), dtype=object)
+            group_values[:] = values
+
         if self.patience_metric is None:
             return X, cond, None, None
 
         if self.dataloader_sampler is not None:
+            if group_values is not None and not getattr(
+                self.dataloader_sampler, "supports_group_ids", False
+            ):
+                raise ValueError(
+                    "grouped validation requires a group-aware data sampler"
+                )
             train_idx, test_idx = self.dataloader_sampler.train_test()
+        elif group_values is not None:
+            train_idx, test_idx = train_test_indices(
+                len(X),
+                train_size=0.8,
+                seed=self.random_state,
+                groups=group_values,
+            )
         else:
             total = np.arange(0, len(X))
             np.random.shuffle(total)
@@ -515,6 +546,8 @@ class ImageGAN(nn.Module):
             train_idx, test_idx = total[:split], total[split:]
 
         X_train, X_val = X.filter_indices(train_idx), X.filter_indices(test_idx)
+        if group_values is not None:
+            self._validation_groups = group_values[test_idx]
         cond_train, cond_val = None, None
         if cond is not None:
             cond_train, cond_val = cond[train_idx], cond[test_idx]
@@ -526,10 +559,13 @@ class ImageGAN(nn.Module):
         cond: Optional[torch.Tensor] = None,
         fake_labels_generator: Optional[Callable] = None,
         true_labels_generator: Optional[Callable] = None,
+        groups: Any = None,
     ) -> "ImageGAN":
         self.train()
 
-        X, cond, X_val, cond_val = self._train_test_split(X, cond)
+        X, cond, X_val, cond_val = self._train_test_split(
+            X, cond, groups=groups
+        )
 
         # Load Dataset
         loader = self.dataloader(X, cond)
@@ -603,6 +639,7 @@ class ImageGAN(nn.Module):
                         cond_val,
                         patience_score,
                         patience,
+                        groups=self._validation_groups,
                     )
                     if save:
                         best_state_dict = self.state_dict()

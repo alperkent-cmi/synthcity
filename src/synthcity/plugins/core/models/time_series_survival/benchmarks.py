@@ -7,7 +7,6 @@ from typing import Any, Callable, Dict, List
 import numpy as np
 import optuna
 from sklearn.metrics import roc_auc_score
-from sklearn.model_selection import StratifiedKFold, train_test_split
 
 # synthcity absolute
 import synthcity.logger as log
@@ -17,6 +16,7 @@ from synthcity.plugins.core.models.survival_analysis.metrics import (
     generate_score,
     print_score,
 )
+from synthcity.utils.evaluation import cross_validation_splits, train_test_indices
 from synthcity.utils.optimizer import (
     EarlyStoppingExceeded,
     ParamRepeatPruner,
@@ -61,6 +61,7 @@ def _search_objective_meta(
     time_horizons: List,
     pruner: ParamRepeatPruner,
     n_folds: int = 3,
+    groups: Any = None,
 ) -> Callable:
     def objective(trial: optuna.Trial) -> float:
         args = _trial_params(estimator.name(), trial, estimator.hyperparameter_space())
@@ -68,7 +69,15 @@ def _search_objective_meta(
         try:
             model = estimator(n_iter=10, **args)
             raw_score = evaluate_ts_survival_model(
-                model, static, temporal, observation_times, T, Y, time_horizons
+                model,
+                static,
+                temporal,
+                observation_times,
+                T,
+                Y,
+                time_horizons,
+                n_folds=n_folds,
+                groups=groups,
             )
         except BaseException as e:
             log.error(f"model search failed {e}")
@@ -96,6 +105,7 @@ def search_hyperparams(
     pretrained: bool = False,
     n_trials: int = 50,
     timeout: int = 100,
+    groups: Any = None,
 ) -> dict:
     temporal_total = 0
     for item in temporal:
@@ -119,6 +129,7 @@ def search_hyperparams(
                 time_horizons,
                 pruner,
                 n_folds=n_folds,
+                groups=groups,
             ),
             n_trials=n_trials,
             timeout=timeout,
@@ -151,6 +162,7 @@ def evaluate_ts_survival_model(
     metrics: List[str] = ["c_index", "brier_score"],
     random_state: int = 0,
     pretrained: bool = False,
+    groups: Any = None,
 ) -> Dict:
     """Helper for evaluating survival analysis tasks.
 
@@ -190,6 +202,16 @@ def evaluate_ts_survival_model(
     T = np.asarray(T)
     Y = np.asarray(Y)
 
+    group_values = None
+    if groups is not None:
+        group_list = list(groups)
+        if len(group_list) != len(static):
+            raise ValueError(
+                f"groups length {len(group_list)} does not match data length {len(static)}"
+            )
+        group_values = np.empty(len(group_list), dtype=object)
+        group_values[:] = group_list
+
     for metric in metrics:
         if metric not in supported_metrics:
             raise ValueError(f"Metric {metric} not supported")
@@ -209,6 +231,7 @@ def evaluate_ts_survival_model(
         Y_train: np.ndarray,
         Y_test: np.ndarray,
         time_horizons: list,
+        groups_train: Any = None,
     ) -> tuple:
         train_max = T_train.max()
         T_test[T_test > train_max] = train_max
@@ -218,15 +241,26 @@ def evaluate_ts_survival_model(
         else:
             model = copy.deepcopy(estimator)
 
-            model.fit(
-                static_train, temporal_train, observation_times_train, T_train, Y_train
-            )
-        try:
-            pred = model.predict(
-                static_test, temporal_test, observation_times_test, time_horizons
-            ).to_numpy()
-        except BaseException as e:
-            raise e
+            if groups_train is None:
+                model.fit(
+                    static_train,
+                    temporal_train,
+                    observation_times_train,
+                    T_train,
+                    Y_train,
+                )
+            else:
+                model.fit(
+                    static_train,
+                    temporal_train,
+                    observation_times_train,
+                    T_train,
+                    Y_train,
+                    groups=groups_train,
+                )
+        pred = model.predict(
+            static_test, temporal_test, observation_times_test, time_horizons
+        ).to_numpy()
 
         c_index = 0.0
         brier_score = 0.0
@@ -251,20 +285,24 @@ def evaluate_ts_survival_model(
 
     if n_folds == 1:
         cv_idx = 0
-        (
-            static_train,
-            static_test,
-            temporal_train,
-            temporal_test,
-            observation_times_train,
-            observation_times_test,
-            T_train,
-            T_test,
-            Y_train,
-            Y_test,
-        ) = train_test_split(
-            static, temporal, observation_times, T, Y, random_state=random_state
+        train_index, test_index = train_test_indices(
+            len(static),
+            train_size=0.75,
+            seed=random_state,
+            y=Y,
+            groups=groups,
+            stratified=groups is None,
         )
+        static_train = static[train_index]
+        static_test = static[test_index]
+        temporal_train = temporal[train_index]
+        temporal_test = temporal[test_index]
+        observation_times_train = observation_times[train_index]
+        observation_times_test = observation_times[test_index]
+        T_train = T[train_index]
+        T_test = T[test_index]
+        Y_train = Y[train_index]
+        Y_test = Y[test_index]
         local_time_horizons = [t for t in time_horizons if t > np.min(T_test)]
 
         c_index, brier_score = _get_surv_metrics(
@@ -280,6 +318,7 @@ def evaluate_ts_survival_model(
             Y_train,
             Y_test,
             local_time_horizons,
+            groups_train=None if group_values is None else group_values[train_index],
         )
         for metric in metrics:
             if metric == "c_index":
@@ -288,10 +327,17 @@ def evaluate_ts_survival_model(
                 results[metric][cv_idx] = brier_score
 
     else:
-        skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
+        cv_splits = cross_validation_splits(
+            len(temporal),
+            y=Y,
+            n_folds=n_folds,
+            seed=random_state,
+            groups=groups,
+            stratified=True,
+        )
 
         cv_idx = 0
-        for train_index, test_index in skf.split(temporal, Y):
+        for train_index, test_index in cv_splits:
             static_train = static[train_index]
             temporal_train = temporal[train_index]
             observation_times_train = observation_times[train_index]
@@ -319,6 +365,7 @@ def evaluate_ts_survival_model(
                 Y_train,
                 Y_test,
                 local_time_horizons,
+                groups_train=None if group_values is None else group_values[train_index],
             )
             for metric in metrics:
                 if metric == "c_index":
@@ -350,6 +397,7 @@ def evaluate_ts_classification(
     metrics: List[str] = ["aucroc"],
     random_state: int = 0,
     pretrained: bool = False,
+    groups: Any = None,
 ) -> Dict:
     results: Dict[str, list] = {
         "aucroc": [],
@@ -359,6 +407,15 @@ def evaluate_ts_classification(
     temporal = np.asarray(temporal)
     observation_times = np.asarray(observation_times)
     Y = np.asarray(Y)
+    group_values = None
+    if groups is not None:
+        group_list = list(groups)
+        if len(group_list) != len(static):
+            raise ValueError(
+                f"groups length {len(group_list)} does not match data length {len(static)}"
+            )
+        group_values = np.empty(len(group_list), dtype=object)
+        group_values[:] = group_list
 
     def _get_metrics(
         cv_idx: int,
@@ -370,31 +427,50 @@ def evaluate_ts_classification(
         observation_times_test: np.ndarray,
         Y_train: np.ndarray,
         Y_test: np.ndarray,
+        fit_groups: Any = None,
     ) -> tuple:
         if pretrained:
             model = estimator[cv_idx]
         else:
             model = copy.deepcopy(estimator)
 
-            model.fit(static_train, temporal_train, observation_times_train, Y_train)
+            if fit_groups is None:
+                model.fit(
+                    static_train,
+                    temporal_train,
+                    observation_times_train,
+                    Y_train,
+                )
+            else:
+                model.fit(
+                    static_train,
+                    temporal_train,
+                    observation_times_train,
+                    Y_train,
+                    groups=fit_groups,
+                )
         pred = model.predict(static_test, temporal_test, observation_times_test)
 
         return roc_auc_score(Y_test, pred)
 
     if n_folds == 1:
         cv_idx = 0
-        (
-            static_train,
-            static_test,
-            temporal_train,
-            temporal_test,
-            observation_times_train,
-            observation_times_test,
-            Y_train,
-            Y_test,
-        ) = train_test_split(
-            static, temporal, observation_times, Y, random_state=random_state
+        train_index, test_index = train_test_indices(
+            len(static),
+            train_size=0.75,
+            seed=random_state,
+            y=Y,
+            groups=group_values,
+            stratified=group_values is None,
         )
+        static_train = static[train_index]
+        static_test = static[test_index]
+        temporal_train = temporal[train_index]
+        temporal_test = temporal[test_index]
+        observation_times_train = observation_times[train_index]
+        observation_times_test = observation_times[test_index]
+        Y_train = Y[train_index]
+        Y_test = Y[test_index]
 
         aucroc = _get_metrics(
             cv_idx,
@@ -406,13 +482,23 @@ def evaluate_ts_classification(
             observation_times_test,
             Y_train,
             Y_test,
+            fit_groups=(
+                None if group_values is None else group_values[train_index]
+            ),
         )
         results["aucroc"] = [aucroc]
     else:
-        skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
+        cv_splits = cross_validation_splits(
+            len(temporal),
+            y=Y,
+            n_folds=n_folds,
+            seed=random_state,
+            groups=group_values,
+            stratified=True,
+        )
 
         cv_idx = 0
-        for train_index, test_index in skf.split(temporal, Y):
+        for train_index, test_index in cv_splits:
             static_train = static[train_index]
             temporal_train = temporal[train_index]
             observation_times_train = observation_times[train_index]
@@ -433,6 +519,9 @@ def evaluate_ts_classification(
                 observation_times_test,
                 Y_train,
                 Y_test,
+                fit_groups=(
+                    None if group_values is None else group_values[train_index]
+                ),
             )
             results["aucroc"].append(aucroc)
 

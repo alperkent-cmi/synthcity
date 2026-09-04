@@ -74,9 +74,10 @@ class TSSurvivalFunctionTimeToEvent(TimeToEventPlugin):
         observation_times: np.ndarray,
         T: np.ndarray,
         E: np.ndarray,
+        groups: Any = None,
     ) -> "TimeToEventPlugin":
         "Training logic"
-        self.model.fit(static, temporal, observation_times, T, E)
+        self.model.fit(static, temporal, observation_times, T, E, groups=groups)
 
         self.time_horizons = np.linspace(
             T.min(), T.max(), self.time_points, dtype=int
@@ -100,7 +101,7 @@ class TSSurvivalFunctionTimeToEvent(TimeToEventPlugin):
             n_temporal_window=temporal[0].shape[0],
             output_shape=[1],
             **self.rnn_generator_extra_args,
-        ).fit(data, temporal, observation_times, Tlog)
+        ).fit(data, temporal, observation_times, Tlog, groups=groups)
 
         return self
 

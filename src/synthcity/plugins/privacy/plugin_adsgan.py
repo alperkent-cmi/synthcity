@@ -265,6 +265,7 @@ class AdsGANPlugin(Plugin):
             lambda_identifiability_penalty=self.lambda_identifiability_penalty,
             encoder_max_clusters=self.encoder_max_clusters,
             dataloader_sampler=self.dataloader_sampler,
+            groups=X.group_ids,
             device=self.device,
             patience=self.patience,
             patience_metric=self.patience_metric,
@@ -272,7 +273,7 @@ class AdsGANPlugin(Plugin):
             n_iter_print=self.n_iter_print,
             adjust_inference_sampling=self.adjust_inference_sampling,
         )
-        self.model.fit(X.dataframe(), cond=cond)
+        self.model.fit(X.dataframe(), cond=cond, groups=X.group_ids)
 
         return self
 

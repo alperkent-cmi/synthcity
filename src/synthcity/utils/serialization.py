@@ -160,9 +160,14 @@ def load_from_file(path: Union[str, Path]) -> Any:
 
 
 def dataframe_hash(df: pd.DataFrame) -> str:
-    """Dataframe hashing, used for caching/backups"""
+    """Return a content hash that distinguishes missing values from zero."""
     cols = sorted(list(df.columns))
-    return str(abs(pd.util.hash_pandas_object(df[cols].fillna(0)).sum()))
+    digest = hashlib.sha256()
+    digest.update(
+        repr([(str(column), str(df[column].dtype)) for column in cols]).encode()
+    )
+    digest.update(pd.util.hash_pandas_object(df[cols], index=True).values.tobytes())
+    return digest.hexdigest()
 
 
 def dataframe_cols_hash(df: pd.DataFrame) -> str:

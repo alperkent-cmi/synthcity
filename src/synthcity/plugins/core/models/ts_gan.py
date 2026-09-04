@@ -324,7 +324,14 @@ class TimeSeriesGAN(nn.Module):
         temporal_data: np.ndarray,
         observation_times: np.ndarray,
         cond: Optional[np.ndarray] = None,
+        groups: Optional[Any] = None,
     ) -> "TimeSeriesGAN":
+        group_values = None if groups is None else list(groups)
+        if group_values is not None and len(group_values) != len(static_data):
+            raise ValueError(
+                "Time-series groups must align with the number of sequences: "
+                f"groups={len(group_values)}, sequences={len(static_data)}"
+            )
         static_data_t = self._check_tensor(static_data).float()
         temporal_data_t = self._check_tensor(temporal_data).float()
         observation_times_t = self._check_tensor(observation_times).float()
@@ -352,6 +359,7 @@ class TimeSeriesGAN(nn.Module):
             temporal_data_t,
             observation_times_t,
             condt,
+            groups=group_values,
         )
 
         return self
@@ -808,7 +816,13 @@ class TimeSeriesGAN(nn.Module):
         temporal_data: torch.Tensor,
         observation_times: torch.Tensor,
         cond: Optional[torch.Tensor] = None,
+        groups: Optional[Any] = None,
     ) -> "TimeSeriesGAN":
+        if groups is not None and len(groups) != len(static_data):
+            raise ValueError(
+                "Time-series groups must align with the number of sequences: "
+                f"groups={len(groups)}, sequences={len(static_data)}"
+            )
         self._original_cond = cond
         static_data = self._check_tensor(static_data).float()
         temporal_data = self._check_tensor(temporal_data).float()

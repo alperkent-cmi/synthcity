@@ -269,6 +269,7 @@ class TimeSeriesTabularGAN(torch.nn.Module):
         observation_times: List,
         cond: Optional[Union[pd.DataFrame, pd.Series]] = None,
         encoded: bool = False,
+        groups: Optional[Any] = None,
     ) -> Any:
         if encoded:
             static_enc = static_data
@@ -287,6 +288,7 @@ class TimeSeriesTabularGAN(torch.nn.Module):
             np.asarray(temporal_enc),
             np.asarray(observation_times_enc),
             np.asarray(cond),
+            groups=groups,
         )
         return self
 

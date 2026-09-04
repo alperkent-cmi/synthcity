@@ -33,9 +33,15 @@ class SurvivalFunctionTimeToEvent(TimeToEventPlugin):
         self.tte_column = "tte_column"
 
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
-    def fit(self, X: pd.DataFrame, T: pd.Series, Y: pd.Series) -> "TimeToEventPlugin":
+    def fit(
+        self,
+        X: pd.DataFrame,
+        T: pd.Series,
+        Y: pd.Series,
+        groups: Any = None,
+    ) -> "TimeToEventPlugin":
         "Training logic"
-        self.model.fit(X, T, Y)
+        self.model.fit(X, T, Y, groups=groups)
 
         self.time_horizons = np.linspace(
             T.min(), T.max(), self.time_points, dtype=int

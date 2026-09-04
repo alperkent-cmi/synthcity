@@ -34,6 +34,31 @@ from synthcity.plugins.core.schema import Schema
 from synthcity.plugins.core.serializable import Serializable
 from synthcity.utils.constants import DEVICE
 
+PATE_ACCOUNTING_SCHEMA_VERSION = "pate-accounting-v1"
+PATE_PRIVACY_CLAIM_TYPE = "formal_dp"
+_PATE_ACCOUNTING_REQUIRED_FIELDS = frozenset(
+    {
+        "schema_version",
+        "privacy_claim_type",
+        "accountant",
+        "requested_epsilon",
+        "requested_delta",
+        "requested_alpha",
+        "requested_lamda",
+        "resolved_epsilon",
+        "resolved_delta",
+        "resolved_alpha",
+        "resolved_lamda",
+        "effective_epsilon",
+        "effective_delta",
+        "effective_alpha",
+        "effective_lamda",
+        "iterations",
+        "max_iter",
+        "stopping_state",
+    }
+)
+
 
 class Teachers(Serializable):
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
@@ -65,36 +90,61 @@ class Teachers(Serializable):
             }
 
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
-    def fit(self, X: np.ndarray, generator: Any) -> Any:
+    def fit(self, X: np.ndarray, generator: Any, groups: Any = None) -> Any:
         # 1. train teacher models
         self.teacher_models: list = []
 
-        permutations = np.random.permutation(len(X))
+        if groups is None:
+            permutations = np.random.permutation(len(X))
+            teacher_indices = [
+                permutations[
+                    int(tidx * self.samples_per_teacher) : int(
+                        (tidx + 1) * self.samples_per_teacher
+                    )
+                ]
+                for tidx in range(self.n_teachers)
+            ]
+        else:
+            group_values = list(groups)
+            if len(group_values) != len(X):
+                raise ValueError(
+                    f"groups length {len(group_values)} does not match data length {len(X)}"
+                )
+            group_codes, _ = pd.factorize(group_values, sort=False)
+            unique_group_codes = np.unique(group_codes)
+            if len(unique_group_codes) < self.n_teachers:
+                raise ValueError(
+                    "grouped PATE-GAN requires at least one group per teacher"
+                )
+            teacher_indices = [[] for _ in range(self.n_teachers)]
+            for group_code in np.random.permutation(unique_group_codes):
+                teacher_idx = int(
+                    np.argmin([len(indices) for indices in teacher_indices])
+                )
+                teacher_indices[teacher_idx].extend(
+                    np.flatnonzero(group_codes == group_code).tolist()
+                )
 
         for tidx in range(self.n_teachers):
-            teacher_idx = permutations[
-                int(tidx * self.samples_per_teacher) : int(
-                    (tidx + 1) * self.samples_per_teacher
-                )
-            ]
+            teacher_idx = np.asarray(teacher_indices[tidx], dtype=int)
             teacher_X = X[teacher_idx, :]
 
-            g_mb = np.asarray(generator(len(teacher_X)))
-
             idx = np.random.permutation(len(teacher_X[:, 0]))
-            x_mb = teacher_X[idx[: self.samples_per_teacher], :]
+            sample_count = min(self.samples_per_teacher, len(teacher_X))
+            x_mb = teacher_X[idx[:sample_count], :]
+            g_mb = np.asarray(generator(sample_count))
 
             x_comb = np.concatenate((x_mb, g_mb), axis=0)
             y_comb = np.concatenate(
                 (
                     np.ones(
                         [
-                            len(teacher_X),
+                            len(x_mb),
                         ]
                     ),
                     np.zeros(
                         [
-                            len(teacher_X),
+                            len(g_mb),
                         ]
                     ),
                 ),
@@ -175,6 +225,15 @@ class PATEGAN(Serializable):
     ) -> None:
         super().__init__()
 
+        if epsilon <= 0:
+            raise ValueError(f"epsilon must be positive, got {epsilon}")
+        if delta is not None and not 0 < delta < 1:
+            raise ValueError(f"delta must be between 0 and 1, got {delta}")
+        if lamda <= 0:
+            raise ValueError(f"lamda must be positive, got {lamda}")
+        if alpha < 1:
+            raise ValueError(f"alpha must be at least 1, got {alpha}")
+
         self.max_iter = max_iter
         self.generator_n_layers_hidden = generator_n_layers_hidden
         self.generator_n_units_hidden = generator_n_units_hidden
@@ -196,23 +255,56 @@ class PATEGAN(Serializable):
         self.n_teachers = n_teachers
         self.teacher_template = teacher_template
         self.epsilon = epsilon
-        self.delta = None
+        self.requested_delta = delta
+        self.delta = delta
         self.lamda = lamda
         self.alpha = alpha
         self.encoder_max_clusters = encoder_max_clusters
         self.encoder = encoder
+        self.accounting_metadata = {
+            "schema_version": PATE_ACCOUNTING_SCHEMA_VERSION,
+            "privacy_claim_type": PATE_PRIVACY_CLAIM_TYPE,
+            "accountant": "pate_moments_v1",
+            "requested_epsilon": float(epsilon),
+            "requested_delta": None if delta is None else float(delta),
+            "requested_alpha": int(alpha),
+            "requested_lamda": float(lamda),
+            "resolved_epsilon": float(epsilon),
+            "resolved_delta": None,
+            "resolved_alpha": int(alpha),
+            "resolved_lamda": float(lamda),
+            "effective_epsilon": None,
+            "effective_delta": None,
+            "effective_alpha": None,
+            "effective_lamda": None,
+            "iterations": 0,
+            "max_iter": int(max_iter),
+            "stopping_state": "not_fitted",
+        }
 
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
     def fit(
         self,
         X_train: pd.DataFrame,
+        groups: Optional[Any] = None,
     ) -> Any:
         self.columns = X_train.columns
+        group_values = None if groups is None else list(groups)
+        if group_values is not None and len(group_values) != len(X_train):
+            raise ValueError(
+                f"groups length {len(group_values)} does not match data length {len(X_train)}"
+            )
 
         if self.delta is None:
             self.delta = 1 / (len(X_train) * np.sqrt(len(X_train)))
 
         log.info(f"[pategan] using delta = {self.delta}")
+        self.accounting_metadata.update(
+            {
+                "resolved_delta": float(self.delta),
+                "effective_delta": float(self.delta),
+            }
+        )
 
         self.model = TabularGAN(
             X_train,
@@ -241,6 +333,7 @@ class PATEGAN(Serializable):
             encoder_max_clusters=self.encoder_max_clusters,
             encoder=self.encoder,
             n_iter_print=self.generator_n_iter - 1,
+            groups=group_values,
             device=self.device,
         )
         X_train_enc = self.model.encode(X_train)
@@ -268,7 +361,9 @@ class PATEGAN(Serializable):
                 lamda=self.lamda,
                 template=self.teacher_template,
             )
-            teachers.fit(np.asarray(X_train_enc), self.model)
+            teachers.fit(
+                np.asarray(X_train_enc), self.model, groups=group_values
+            )
 
             log.debug(f"[pategan it {it}] 2. GAN training")
 
@@ -292,7 +387,10 @@ class PATEGAN(Serializable):
                 )
 
             self.model.fit(
-                X_train_enc, fake_labels_generator=fake_labels_generator, encoded=True
+                X_train_enc,
+                fake_labels_generator=fake_labels_generator,
+                encoded=True,
+                groups=group_values,
             )
 
             # epsilon_hat computation
@@ -309,7 +407,39 @@ class PATEGAN(Serializable):
             )
 
         log.debug("pategan training done")
+        stopping_state = (
+            "epsilon_reached" if epsilon_hat >= self.epsilon else "max_iter_reached"
+        )
+        self.accounting_metadata.update(
+            {
+                "effective_epsilon": float(epsilon_hat),
+                "effective_alpha": int(self.alpha),
+                "effective_lamda": float(self.lamda),
+                "iterations": int(it),
+                "stopping_state": stopping_state,
+            }
+        )
         return self
+
+    def get_accounting_metadata(self) -> Dict[str, Any]:
+        metadata = dict(self.accounting_metadata)
+        missing_fields = sorted(_PATE_ACCOUNTING_REQUIRED_FIELDS - metadata.keys())
+        if missing_fields:
+            raise RuntimeError(
+                "PATE-GAN accounting metadata is incomplete; missing fields: "
+                f"{missing_fields}"
+            )
+        if metadata["schema_version"] != PATE_ACCOUNTING_SCHEMA_VERSION:
+            raise RuntimeError(
+                "PATE-GAN accounting metadata has an unsupported schema: "
+                f"{metadata['schema_version']!r}"
+            )
+        if metadata["privacy_claim_type"] != PATE_PRIVACY_CLAIM_TYPE:
+            raise RuntimeError(
+                "PATE-GAN accounting metadata has an unsupported privacy claim: "
+                f"{metadata['privacy_claim_type']!r}"
+            )
+        return metadata
 
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
     def _update_moments_accountant(self, n0: np.ndarray, n1: np.ndarray) -> np.ndarray:
@@ -477,6 +607,7 @@ class PATEGANPlugin(Plugin):
             epsilon=epsilon,
             delta=delta,
             lamda=lamda,
+            alpha=alpha,
         )
 
     @staticmethod
@@ -518,7 +649,7 @@ class PATEGANPlugin(Plugin):
                 name="teacher_template", choices=["linear", "xgboost"]
             ),
             IntegerDistribution(name="encoder_max_clusters", low=2, high=20),
-            FloatDistribution(name="lamda", low=0, high=1),
+            FloatDistribution(name="lamda", low=1e-6, high=1),
             CategoricalDistribution(
                 name="delta", choices=[1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8]
             ),
@@ -526,9 +657,12 @@ class PATEGANPlugin(Plugin):
         ]
 
     def _fit(self, X: DataLoader, *args: Any, **kwargs: Any) -> "PATEGANPlugin":
-        self.model.fit(X.dataframe())
+        self.model.fit(X.dataframe(), groups=X.group_ids)
 
         return self
+
+    def get_accounting_metadata(self) -> Dict[str, Any]:
+        return self.model.get_accounting_metadata()
 
     def _generate(self, count: int, syn_schema: Schema, **kwargs: Any) -> pd.DataFrame:
         return self._safe_generate(self.model.sample, count, syn_schema)

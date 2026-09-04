@@ -22,6 +22,7 @@ from synthcity.plugins.core.dataloader import (
     TimeSeriesSurvivalDataLoader,
     create_from_info,
 )
+from synthcity.plugins.core.constraints import Constraints
 from synthcity.plugins.core.dataset import FlexibleDataset, TensorDataset
 from synthcity.utils.datasets.time_series.google_stocks import GoogleStocksDataloader
 from synthcity.utils.datasets.time_series.pbc import PBCDataloader
@@ -89,6 +90,27 @@ def test_generic_dataloader_encoder() -> None:
         assert dt == decoded_dtypes[idx]
 
 
+def test_generic_dataloader_honors_declared_numeric_categorical_role() -> None:
+    frame = pd.DataFrame(
+        {
+            "status": list(range(1, 16)),
+            "target": [0, 1] * 7 + [0],
+        }
+    )
+    loader = GenericDataLoader(
+        frame,
+        target_column="target",
+        feature_types={"status": "categorical"},
+    )
+
+    encoded, encoders = loader.encode()
+    decoded = encoded.decode(encoders)
+
+    assert "status" in encoders
+    assert encoded["status"].tolist() == list(range(15))
+    assert decoded["status"].tolist() == frame["status"].tolist()
+
+
 def test_generic_dataloader_info() -> None:
     X, y = load_breast_cancer(return_X_y=True, as_frame=True)
 
@@ -106,6 +128,211 @@ def test_generic_dataloader_info() -> None:
     new_loader = GenericDataLoader.from_info(loader.dataframe(), loader.info())
     assert new_loader.shape == loader.shape
     assert new_loader.info() == loader.info()
+
+
+def test_grouped_generic_loader_preserves_whole_groups_and_metadata() -> None:
+    frame = pd.DataFrame(
+        {
+            "value": [0, 1, 2, 3, 4, 5, 6, 7],
+            "category": ["a", "a", "b", "b", "c", "c", "d", "d"],
+            "target": [0, 0, 1, 1, 0, 0, 1, 1],
+        }
+    )
+    groups = np.asarray(["p1", "p1", "p2", "p2", "p3", "p3", "p4", "p4"])
+    loader = GenericDataLoader(
+        frame,
+        target_column="target",
+        group_ids=groups,
+        feature_types={"category": "categorical", "value": "continuous"},
+        source_table={"category": "demographics", "value": "labs"},
+        train_size=0.5,
+        random_state=13,
+    )
+
+    train = loader.train()
+    test = loader.test()
+    train_groups = set(train.group_ids)
+    test_groups = set(test.group_ids)
+    assert train_groups.isdisjoint(test_groups)
+    assert train_groups | test_groups == set(groups)
+    assert train.info()["group_ids"] == train.group_ids.tolist()
+    assert train.info()["feature_types"]["category"] == "categorical"
+    assert train.info()["source_table"]["value"] == "labs"
+
+    sampled = loader.sample(3, random_state=2)
+    sampled_counts = pd.Series(sampled.group_ids).value_counts().to_dict()
+    source_counts = pd.Series(groups).value_counts().to_dict()
+    assert all(
+        sampled_counts[group] == source_counts[group] for group in sampled_counts
+    )
+    assert len(sampled) >= 3
+
+    matched = loader.match(Constraints(rules=[("value", "ge", 3)]))
+    assert len(matched.group_ids) == len(matched)
+    assert matched.feature_types == loader.feature_types
+
+    encoded, encoders = loader.encode()
+    decoded = encoded.decode(encoders)
+    reloaded = GenericDataLoader.from_info(loader.dataframe(), loader.info())
+    assert np.array_equal(encoded.group_ids, groups)
+    assert np.array_equal(decoded.group_ids, groups)
+    assert np.array_equal(reloaded.group_ids, groups)
+    assert encoded.feature_types == loader.feature_types
+    assert decoded.source_table == loader.source_table
+
+
+def test_grouped_loader_keeps_tuple_keys_one_dimensional() -> None:
+    frame = pd.DataFrame({"value": [0, 1], "target": [0, 1]})
+    groups = [("site_a", 1), ("site_a", 2)]
+
+    loader = GenericDataLoader(frame, target_column="target", group_ids=groups)
+
+    assert loader.group_ids.shape == (2,)
+    assert loader.group_ids.tolist() == groups
+
+
+def test_grouped_loader_hash_includes_group_assignments() -> None:
+    frame = pd.DataFrame({"value": [0, 1], "target": [0, 1]})
+
+    first = GenericDataLoader(frame, target_column="target", group_ids=["p1", "p2"])
+    second = GenericDataLoader(frame, target_column="target", group_ids=["p2", "p1"])
+
+    assert first.hash() != second.hash()
+
+
+def test_dataloader_hash_includes_semantic_metadata() -> None:
+    frame = pd.DataFrame({"value": [0, 1], "target": [0, 1]})
+
+    first = GenericDataLoader(
+        frame,
+        target_column="target",
+        feature_types={"value": "continuous"},
+        source_table={"value": "labs"},
+    )
+    second = GenericDataLoader(
+        frame,
+        target_column="target",
+        feature_types={"value": "categorical"},
+        source_table={"value": "survey"},
+    )
+
+    assert first.hash() != second.hash()
+
+
+def test_grouped_cv_splits_are_patient_disjoint() -> None:
+    frame = pd.DataFrame(
+        {
+            "value": np.arange(12),
+            "target": [0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1],
+        }
+    )
+    groups = np.repeat(["p1", "p2", "p3", "p4", "p5", "p6"], 2)
+    loader = GenericDataLoader(frame, target_column="target", group_ids=groups)
+
+    for train_idx, validation_idx in loader.cv_splits(n_splits=3):
+        train_groups = set(groups[train_idx])
+        validation_groups = set(groups[validation_idx])
+        assert train_groups.isdisjoint(validation_groups)
+
+    for train_idx, validation_idx in loader.cv_splits(
+        y=frame["target"], n_splits=3, stratified=True
+    ):
+        train_groups = set(groups[train_idx])
+        validation_groups = set(groups[validation_idx])
+        assert train_groups.isdisjoint(validation_groups)
+
+
+def test_survival_group_ids_preserve_disjoint_train_test() -> None:
+    frame = load_rossi()
+    groups = np.repeat(np.arange(len(frame) // 2), 2)
+
+    loader = SurvivalAnalysisDataLoader(
+        frame,
+        time_to_event_column="week",
+        target_column="arrest",
+        time_horizons=[20],
+        group_ids=groups,
+        train_size=0.5,
+        random_state=13,
+    )
+
+    train = loader.train()
+    test = loader.test()
+
+    assert set(train.group_ids).isdisjoint(set(test.group_ids))
+    assert set(train.group_ids) | set(test.group_ids) == set(groups)
+    assert train.info()["group_ids"] == train.group_ids.tolist()
+
+
+def test_grouped_time_series_preserves_sequence_groups() -> None:
+    temporal_data = [
+        pd.DataFrame({"value": [float(index), float(index + 1)]})
+        for index in range(6)
+    ]
+    observation_times = [[0, 1] for _ in temporal_data]
+    static_data = pd.DataFrame({"static": np.arange(6, dtype=float)})
+    outcome = pd.DataFrame({"label": [0, 0, 1, 1, 0, 1]})
+    groups = np.asarray(["p1", "p1", "p2", "p2", "p3", "p3"])
+
+    loader = TimeSeriesDataLoader(
+        temporal_data=temporal_data,
+        observation_times=observation_times,
+        static_data=static_data,
+        outcome=outcome,
+        group_ids=groups,
+        train_size=0.5,
+        random_state=7,
+    )
+
+    train = loader.train()
+    test = loader.test()
+
+    assert set(train.group_ids).isdisjoint(set(test.group_ids))
+    assert set(train.group_ids) | set(test.group_ids) == set(groups)
+    for train_idx, test_idx in loader.cv_splits(n_splits=3):
+        assert set(groups[train_idx]).isdisjoint(set(groups[test_idx]))
+
+    reloaded = TimeSeriesDataLoader.from_info(loader.dataframe(), loader.info())
+    assert reloaded.group_ids.tolist() == groups.tolist()
+
+    survival_loader = TimeSeriesSurvivalDataLoader(
+        temporal_data=temporal_data,
+        observation_times=observation_times,
+        static_data=static_data,
+        T=np.arange(1, 7),
+        E=np.asarray([0, 1, 0, 1, 0, 1]),
+        group_ids=groups,
+        train_size=0.5,
+        random_state=7,
+    )
+    survival_train = survival_loader.train()
+    survival_test = survival_loader.test()
+    assert set(survival_train.group_ids).isdisjoint(set(survival_test.group_ids))
+
+
+def test_grouped_image_loader_preserves_disjoint_splits() -> None:
+    images = torch.zeros((6, 1, 4, 4))
+    labels = torch.tensor([0, 1, 0, 1, 0, 1])
+    groups = np.asarray(["p1", "p1", "p2", "p2", "p3", "p3"])
+
+    loader = ImageDataLoader(
+        (images, labels),
+        height=4,
+        width=4,
+        group_ids=groups,
+        train_size=0.5,
+        random_state=7,
+    )
+    train = loader.train()
+    test = loader.test()
+
+    assert set(train.group_ids).isdisjoint(set(test.group_ids))
+    for train_idx, test_idx in loader.cv_splits(
+        y=labels,
+        n_splits=3,
+        stratified=True,
+    ):
+        assert set(groups[train_idx]).isdisjoint(set(groups[test_idx]))
 
 
 def test_generic_dataloader_pack_unpack() -> None:

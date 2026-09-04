@@ -3,14 +3,17 @@ from abc import ABC, abstractmethod
 from typing import Any, Optional, Sequence
 
 # third party
+import numpy as np
 import optuna
 import pandas as pd
 from sklearn.model_selection import train_test_split
-from torch import nn
 
 # synthcity absolute
 from synthcity.logger import info, warning
 from synthcity.metrics.weighted_metrics import WeightedMetrics
+from synthcity.plugins.core.dataloader import GenericDataLoader
+from synthcity.utils.evaluation import train_test_indices
+from torch import nn
 
 
 class Callback(ABC):
@@ -65,6 +68,7 @@ class ValidationMixin(CallbackHookMixin):
         self.valid_metric = valid_metric
         self.valid_size = valid_size
         self.valid_set = None
+        self.valid_group_ids = None
         self.valid_score = None
         self.should_stop = False
 
@@ -72,9 +76,24 @@ class ValidationMixin(CallbackHookMixin):
     def metric_direction(self) -> str:
         return self.valid_metric.direction()
 
-    def _set_val_data(self, data: pd.DataFrame) -> pd.DataFrame:
+    def _set_val_data(self, data: pd.DataFrame, groups: Any = None) -> pd.DataFrame:
+        self.valid_group_ids = None
         if self.valid_size > 0 and self.valid_metric is not None:
-            data, self.valid_set = train_test_split(data, test_size=self.valid_size)
+            if groups is None:
+                data, self.valid_set = train_test_split(
+                    data, test_size=self.valid_size
+                )
+            else:
+                group_values = list(groups)
+                train_idx, validation_idx = train_test_indices(
+                    len(data),
+                    train_size=1 - self.valid_size,
+                    groups=group_values,
+                )
+                self.valid_set = data.iloc[validation_idx]
+                self.valid_group_ids = np.empty(len(validation_idx), dtype=object)
+                self.valid_group_ids[:] = [group_values[index] for index in validation_idx]
+                data = data.iloc[train_idx]
         return data
 
     @abstractmethod
@@ -87,7 +106,17 @@ class ValidationMixin(CallbackHookMixin):
             warning("No validation set provided. Skipped validation.")
             return None
         syn_data = pd.DataFrame(self.generate(len(self.valid_set)))  # type: ignore
-        return self.valid_metric.evaluate(self.valid_set, syn_data)
+        if self.valid_group_ids is None:
+            return self.valid_metric.evaluate(self.valid_set, syn_data)
+
+        valid_data = GenericDataLoader(
+            self.valid_set, group_ids=self.valid_group_ids
+        )
+        synthetic_group_ids = np.arange(len(syn_data), dtype=object)
+        synthetic_data = GenericDataLoader(
+            syn_data, group_ids=synthetic_group_ids
+        )
+        return self.valid_metric.evaluate(valid_data, synthetic_data)
 
     def on_epoch_begin(self) -> None:
         self.valid_score = None

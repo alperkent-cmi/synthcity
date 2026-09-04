@@ -12,7 +12,7 @@ from fflows import FourierFlow
 
 # synthcity absolute
 from synthcity.plugins import Plugins
-from synthcity.plugins.core.dataloader import DataLoader
+from synthcity.plugins.core.dataloader import DataLoader, GenericDataLoader
 from synthcity.plugins.core.distribution import (
     CategoricalDistribution,
     Distribution,
@@ -187,7 +187,11 @@ class FourierFlowsPlugin(Plugin):
         static_data_with_horizons = np.concatenate(
             [np.asarray(static), np.asarray(observation_times)], axis=1
         )
-        self.static_model.fit(pd.DataFrame(static_data_with_horizons))
+        static_loader = GenericDataLoader(
+            pd.DataFrame(static_data_with_horizons),
+            group_ids=X.group_ids,
+        )
+        self.static_model.fit(static_loader)
 
         # Train temporal generator
         self.temporal_model.fit(temporal_enc, **self.train_args)
@@ -216,6 +220,7 @@ class FourierFlowsPlugin(Plugin):
             np.asarray(temporal),
             np.asarray(observation_times),
             np.asarray(outcome_enc),
+            groups=X.group_ids,
         )
 
         self.temporal_encoded_columns = temporal_enc[0].columns

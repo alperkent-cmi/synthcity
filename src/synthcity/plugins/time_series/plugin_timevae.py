@@ -270,7 +270,12 @@ class TimeVAEPlugin(Plugin):
             encoder=self.encoder,
             device=self.device,
         )
-        self.cov_model.fit(static, temporal, observation_times)
+        self.cov_model.fit(
+            static,
+            temporal,
+            observation_times,
+            groups=X.group_ids,
+        )
 
         # Outcome generation
         self.outcome_encoder.fit(outcome)
@@ -307,6 +312,7 @@ class TimeVAEPlugin(Plugin):
             np.asarray(temporal),
             np.asarray(observation_times),
             np.asarray(outcome_enc),
+            groups=X.group_ids,
         )
 
         return self

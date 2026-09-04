@@ -216,6 +216,7 @@ class TVAEPlugin(Plugin):
             encoder_dropout=self.encoder_dropout,
             encoder_max_clusters=self.data_encoder_max_clusters,
             dataloader_sampler=self.dataloader_sampler,
+            groups=X.group_ids,
             loss_factor=self.loss_factor,
             clipping_value=self.clipping_value,
             n_iter_min=self.n_iter_min,
@@ -223,7 +224,7 @@ class TVAEPlugin(Plugin):
             patience=self.patience,
             device=self.device,
         )
-        self.model.fit(X.dataframe(), **kwargs)
+        self.model.fit(X.dataframe(), groups=X.group_ids, **kwargs)
 
         return self
 

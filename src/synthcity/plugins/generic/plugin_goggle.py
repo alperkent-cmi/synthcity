@@ -245,7 +245,7 @@ class GOGGLEPlugin(Plugin):
             raise NotImplementedError(
                 "conditional generation is not currently available for the goggle plugin."
             )
-        self.model.fit(X.dataframe(), **kwargs)
+        self.model.fit(X.dataframe(), groups=X.group_ids, **kwargs)
         return self
 
     def _generate(self, count: int, syn_schema: Schema, **kwargs: Any) -> pd.DataFrame:

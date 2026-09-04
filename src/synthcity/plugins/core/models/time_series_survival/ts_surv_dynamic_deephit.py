@@ -21,6 +21,7 @@ from synthcity.plugins.core.models.time_series_survival.utils import get_padded_
 from synthcity.plugins.core.models.transformer import TransformerModel
 from synthcity.plugins.core.models.ts_model import TimeSeriesLayer
 from synthcity.utils.constants import DEVICE
+from synthcity.utils.evaluation import train_test_indices
 from synthcity.utils.reproducibility import enable_reproducible_results
 
 # synthcity relative
@@ -118,6 +119,7 @@ class DynamicDeephitTimeSeriesSurvival(TimeSeriesSurvivalPlugin):
         observation_times: Union[np.ndarray, List],
         T: Union[np.ndarray, List],
         E: Union[np.ndarray, List],
+        groups: Any = None,
     ) -> TimeSeriesSurvivalPlugin:
         static = np.asarray(static)
         temporal = np.asarray(temporal)
@@ -130,6 +132,7 @@ class DynamicDeephitTimeSeriesSurvival(TimeSeriesSurvivalPlugin):
             data,
             T,
             E,
+            groups=groups,
         )
         return self
 
@@ -271,9 +274,12 @@ class DynamicDeepHitModel:
         x: np.ndarray,
         t: np.ndarray,
         e: np.ndarray,
+        groups: Any = None,
     ) -> Any:
         discretized_t, self.split_time = self.discretize(t, self.split, self.split_time)
-        processed_data = self._preprocess_training_data(x, discretized_t, e)
+        processed_data = self._preprocess_training_data(
+            x, discretized_t, e, groups=groups
+        )
         x_train, t_train, e_train, x_val, t_val, e_val = processed_data
         inputdim = x_train.shape[-1]
         seqlen = x_train.shape[-2]
@@ -374,28 +380,51 @@ class DynamicDeepHitModel:
         x: np.ndarray,
         t: np.ndarray,
         e: np.ndarray,
+        groups: Any = None,
     ) -> Tuple:
         """RNNs require different preprocessing for variable length sequences"""
 
-        idx = list(range(x.shape[0]))
-        np.random.seed(self.random_state)
-        np.random.shuffle(idx)
+        if groups is None:
+            train_idx = list(range(x.shape[0]))
+            np.random.seed(self.random_state)
+            np.random.shuffle(train_idx)
+            validation_idx = None
+        else:
+            train_idx, validation_idx = train_test_indices(
+                x.shape[0],
+                train_size=1.0 - self.val_size,
+                seed=self.random_state,
+                groups=groups,
+            )
 
         x = get_padded_features(x)
         self.pad_size = x.shape[1]
-        x_train, t_train, e_train = x[idx], t[idx], e[idx]
+        x_train, t_train, e_train = x[train_idx], t[train_idx], e[train_idx]
 
         x_train = torch.from_numpy(x_train.astype(float)).float().to(self.device)
         t_train = torch.from_numpy(t_train.astype(float)).float().to(self.device)
         e_train = torch.from_numpy(e_train.astype(int)).float().to(self.device)
 
-        vsize = int(self.val_size * x_train.shape[0])
-
-        x_val, t_val, e_val = x_train[-vsize:], t_train[-vsize:], e_train[-vsize:]
-
-        x_train = x_train[:-vsize]
-        t_train = t_train[:-vsize]
-        e_train = e_train[:-vsize]
+        if validation_idx is None:
+            vsize = int(self.val_size * x_train.shape[0])
+            x_val, t_val, e_val = (
+                x_train[-vsize:],
+                t_train[-vsize:],
+                e_train[-vsize:],
+            )
+            x_train = x_train[:-vsize]
+            t_train = t_train[:-vsize]
+            e_train = e_train[:-vsize]
+        else:
+            x_val = torch.from_numpy(x[validation_idx].astype(float)).float().to(
+                self.device
+            )
+            t_val = torch.from_numpy(t[validation_idx].astype(float)).float().to(
+                self.device
+            )
+            e_val = torch.from_numpy(e[validation_idx].astype(int)).float().to(
+                self.device
+            )
 
         return (x_train, t_train, e_train, x_val, t_val, e_val)
 

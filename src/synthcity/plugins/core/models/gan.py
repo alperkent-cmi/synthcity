@@ -15,6 +15,7 @@ from tqdm import tqdm
 import synthcity.logger as log
 from synthcity.metrics.weighted_metrics import WeightedMetrics
 from synthcity.utils.constants import DEVICE
+from synthcity.utils.evaluation import train_test_indices
 from synthcity.utils.reproducibility import clear_cache, enable_reproducible_results
 
 # synthcity relative
@@ -253,6 +254,7 @@ class GAN(nn.Module):
         cond: Optional[np.ndarray] = None,
         fake_labels_generator: Optional[Callable] = None,
         true_labels_generator: Optional[Callable] = None,
+        groups: Any = None,
     ) -> "GAN":
         clear_cache()
 
@@ -280,6 +282,7 @@ class GAN(nn.Module):
             condt,
             fake_labels_generator=fake_labels_generator,
             true_labels_generator=true_labels_generator,
+            groups=groups,
         )
 
         return self
@@ -551,12 +554,30 @@ class GAN(nn.Module):
 
         return score, patience, save
 
-    def _train_test_split(self, X: torch.Tensor, cond: Optional[torch.Tensor]) -> Tuple:
+    def _train_test_split(
+        self,
+        X: torch.Tensor,
+        cond: Optional[torch.Tensor],
+        groups: Any = None,
+    ) -> Tuple:
         if self.patience_metric is None:
             return X, None, cond, None
 
         if self.dataloader_sampler is not None:
+            if groups is not None and not getattr(
+                self.dataloader_sampler, "supports_group_ids", False
+            ):
+                raise ValueError(
+                    "grouped validation requires a group-aware data sampler"
+                )
             train_idx, test_idx = self.dataloader_sampler.train_test()
+        elif groups is not None:
+            train_idx, test_idx = train_test_indices(
+                len(X),
+                train_size=0.8,
+                seed=self.random_state,
+                groups=groups,
+            )
         else:
             total = np.arange(0, len(X))
             np.random.shuffle(total)
@@ -576,11 +597,12 @@ class GAN(nn.Module):
         cond: Optional[torch.Tensor] = None,
         fake_labels_generator: Optional[Callable] = None,
         true_labels_generator: Optional[Callable] = None,
+        groups: Any = None,
     ) -> "GAN":
         self._original_cond = cond
 
         X = self._check_tensor(X).float()
-        X, X_val, cond, cond_val = self._train_test_split(X, cond)
+        X, X_val, cond, cond_val = self._train_test_split(X, cond, groups=groups)
 
         # Load Dataset
         loader = self.dataloader(X, cond)

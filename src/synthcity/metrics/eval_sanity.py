@@ -32,9 +32,15 @@ class BasicMetricEvaluator(MetricEvaluator):
                 X_gt.numpy().reshape(len(X_gt), -1), 1, return_distance=True
             )
             return dist.squeeze()
-        except BaseException:
-            log.error("NearestNeighbors failed")
-            return np.asarray([999])
+        except (TypeError, ValueError) as exc:
+            log.error(
+                f"NearestNeighbors failed for real_shape={X_gt.shape} "
+                f"synthetic_shape={X_syn.shape}: {exc}"
+            )
+            raise RuntimeError(
+                "Nearest-neighbor evaluation failed for "
+                f"real_shape={X_gt.shape}, synthetic_shape={X_syn.shape}"
+            ) from exc
 
     @staticmethod
     def type() -> str:

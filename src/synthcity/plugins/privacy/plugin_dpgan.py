@@ -271,6 +271,7 @@ class DPGANPlugin(Plugin):
             lambda_gradient_penalty=self.lambda_gradient_penalty,
             encoder_max_clusters=self.encoder_max_clusters,
             dataloader_sampler=self.dataloader_sampler,
+            groups=X.group_ids,
             device=self.device,
             # privacy
             dp_enabled=self.dp_enabled,
@@ -284,7 +285,7 @@ class DPGANPlugin(Plugin):
             n_iter_min=self.n_iter_min,
             n_iter_print=self.n_iter_print,
         )
-        self.model.fit(X.dataframe(), cond=cond)
+        self.model.fit(X.dataframe(), cond=cond, groups=X.group_ids)
 
         return self
 

@@ -85,7 +85,8 @@ class TabDDPM(nn.Module, ValidationMixin):
         self, X: pd.DataFrame, cond: Optional[pd.Series] = None, **kwargs: Any
     ) -> "TabDDPM":
 
-        X = self._set_val_data(X)
+        groups = kwargs.pop("groups", None)
+        X = self._set_val_data(X, groups=groups)
 
         self.on_fit_begin()
 

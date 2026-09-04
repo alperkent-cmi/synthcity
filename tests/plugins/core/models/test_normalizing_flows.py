@@ -1,8 +1,10 @@
 # third party
 import pytest
+import torch
 from sklearn.datasets import load_iris
 
 # synthcity absolute
+from synthcity.plugins.core.models.bnaf import ReduceLROnPlateau
 from synthcity.plugins.core.models.flows import NormalizingFlows
 
 
@@ -26,6 +28,15 @@ def test_nf_sanity() -> None:
     assert model.linear_transform_type == "permutation"
     assert model.base_transform_type == "affine-coupling"
     assert model.lr == 1e-3
+
+
+def test_bnaf_scheduler_accepts_legacy_verbose_argument() -> None:
+    parameter = torch.nn.Parameter(torch.ones(()))
+    optimizer = torch.optim.Adam([parameter])
+
+    scheduler = ReduceLROnPlateau(optimizer, verbose=True, early_stopping=2)
+
+    assert scheduler.early_stopping == 2
 
 
 @pytest.mark.parametrize("base_distribution", ["standard_normal"])

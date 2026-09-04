@@ -6,7 +6,6 @@ from typing import Any, Callable, Dict, List
 import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
-from sklearn.model_selection import StratifiedKFold, train_test_split
 
 # synthcity absolute
 from synthcity.plugins.core.models.survival_analysis.loader import (
@@ -19,6 +18,7 @@ from synthcity.plugins.core.models.survival_analysis.metrics import (
     print_score,
 )
 from synthcity.utils.dataframe import constant_columns
+from synthcity.utils.evaluation import cross_validation_splits, train_test_indices
 
 
 def evaluate_survival_model(
@@ -31,6 +31,7 @@ def evaluate_survival_model(
     metrics: List[str] = ["c_index", "brier_score", "aucroc"],
     random_state: int = 0,
     pretrained: bool = False,
+    groups: Any = None,
 ) -> Dict:
     """Helper for evaluating survival analysis tasks.
 
@@ -75,6 +76,7 @@ def evaluate_survival_model(
         Y_train: pd.DataFrame,
         Y_test: pd.DataFrame,
         time_horizons: list,
+        groups_train: Any = None,
     ) -> tuple:
         train_max = T_train.max()
         T_test[T_test > train_max] = train_max
@@ -88,12 +90,12 @@ def evaluate_survival_model(
             X_train = X_train.drop(columns=constant_cols)
             X_test = X_test.drop(columns=constant_cols)
 
-            model.fit(X_train, T_train, Y_train)
+            if groups_train is None:
+                model.fit(X_train, T_train, Y_train)
+            else:
+                model.fit(X_train, T_train, Y_train, groups=groups_train)
 
-        try:
-            pred = model.predict(X_test, time_horizons).to_numpy()
-        except BaseException as e:
-            raise e
+        pred = model.predict(X_test, time_horizons).to_numpy()
 
         c_index = 0.0
         brier_score = 0.0
@@ -125,6 +127,7 @@ def evaluate_survival_model(
         Y_train: pd.DataFrame,
         Y_test: pd.DataFrame,
         time_horizons: list,
+        groups_train: Any = None,
     ) -> float:
         cv_idx = 0
 
@@ -140,22 +143,59 @@ def evaluate_survival_model(
             X_train = X_train.drop(columns=constant_cols)
             X_test = X_test.drop(columns=constant_cols)
 
-            model.fit(X_train, T_train, Y_train)
+            if groups_train is None:
+                model.fit(X_train, T_train, Y_train)
+            else:
+                model.fit(X_train, T_train, Y_train, groups=groups_train)
 
-        try:
-            pred = model.predict(X_test, time_horizons).to_numpy()
-        except BaseException as e:
-            raise e
+        pred = model.predict(X_test, time_horizons).to_numpy()
 
         local_preds = pd.DataFrame(pred[:, k]).squeeze()
 
         return roc_auc_score(Y_test, local_preds) / (len(time_horizons))
 
+    def horizon_groups(horizon_days: int) -> Any:
+        if groups is None:
+            return None
+        group_values = list(groups)
+        event_horizon = ((np.asarray(Y) == 1) & (np.asarray(T) <= horizon_days)) | (
+            (np.asarray(Y) == 0) & (np.asarray(T) > horizon_days)
+        )
+        censored_event_horizon = (np.asarray(Y) == 1) & (
+            np.asarray(T) > horizon_days
+        )
+        selected = np.concatenate(
+            [np.flatnonzero(event_horizon), np.flatnonzero(censored_event_horizon)]
+        )
+        if len(group_values) != len(X):
+            raise ValueError(
+                f"groups length {len(group_values)} does not match data length {len(X)}"
+            )
+        return [group_values[index] for index in selected]
+
+    group_values = None
+    if groups is not None:
+        group_list = list(groups)
+        if len(group_list) != len(X):
+            raise ValueError(
+                f"groups length {len(group_list)} does not match data length {len(X)}"
+            )
+        group_values = np.empty(len(group_list), dtype=object)
+        group_values[:] = group_list
+
     if n_folds == 1:
         cv_idx = 0
-        X_train, X_test, T_train, T_test, Y_train, Y_test = train_test_split(
-            X, T, Y, random_state=random_state
+        train_index, test_index = train_test_indices(
+            len(X),
+            train_size=0.75,
+            seed=random_state,
+            y=Y,
+            groups=groups,
+            stratified=groups is None,
         )
+        X_train, X_test = X.iloc[train_index], X.iloc[test_index]
+        T_train, T_test = T.iloc[train_index], T.iloc[test_index]
+        Y_train, Y_test = Y.iloc[train_index], Y.iloc[test_index]
         local_time_horizons = [t for t in time_horizons if t > np.min(T_test)]
 
         c_index, brier_score = _get_surv_metrics(
@@ -167,6 +207,7 @@ def evaluate_survival_model(
             Y_train,
             Y_test,
             local_time_horizons,
+            groups_train=None if group_values is None else group_values[train_index],
         )
         for metric in metrics:
             if metric == "c_index":
@@ -181,9 +222,21 @@ def evaluate_survival_model(
                 X_horizon, T_horizon, Y_horizon = generate_dataset_for_horizon(
                     X, T, Y, time_horizons[k]
                 )
-                X_train, X_test, T_train, T_test, Y_train, Y_test = train_test_split(
-                    X_horizon, T_horizon, Y_horizon, random_state=random_state
+                horizon_group_values = horizon_groups(time_horizons[k])
+                train_index, test_index = train_test_indices(
+                    len(X_horizon),
+                    train_size=0.75,
+                    seed=random_state,
+                    y=Y_horizon,
+                    groups=horizon_group_values,
+                    stratified=horizon_group_values is None,
                 )
+                X_train = X_horizon.iloc[train_index]
+                X_test = X_horizon.iloc[test_index]
+                T_train = T_horizon.iloc[train_index]
+                T_test = T_horizon.iloc[test_index]
+                Y_train = Y_horizon.iloc[train_index]
+                Y_test = Y_horizon.iloc[test_index]
 
                 metric = "aucroc"
 
@@ -196,20 +249,32 @@ def evaluate_survival_model(
                     Y_train,
                     Y_test,
                     local_time_horizons,
+                    groups_train=(
+                        None
+                        if horizon_group_values is None
+                        else [horizon_group_values[index] for index in train_index]
+                    ),
                 )
 
     else:
-        skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
+        cv_splits = cross_validation_splits(
+            len(X),
+            y=Y,
+            n_folds=n_folds,
+            seed=random_state,
+            groups=groups,
+            stratified=True,
+        )
 
         cv_idx = 0
-        for train_index, test_index in skf.split(X, Y):
+        for train_index, test_index in cv_splits:
 
-            X_train = X.loc[X.index[train_index]]
-            Y_train = Y.loc[Y.index[train_index]]
-            T_train = T.loc[T.index[train_index]]
-            X_test = X.loc[X.index[test_index]]
-            Y_test = Y.loc[Y.index[test_index]]
-            T_test = T.loc[T.index[test_index]]
+            X_train = X.iloc[train_index]
+            Y_train = Y.iloc[train_index]
+            T_train = T.iloc[train_index]
+            X_test = X.iloc[test_index]
+            Y_test = Y.iloc[test_index]
+            T_test = T.iloc[test_index]
 
             local_time_horizons = [t for t in time_horizons if t > np.min(T_test)]
 
@@ -222,6 +287,7 @@ def evaluate_survival_model(
                 Y_train,
                 Y_test,
                 local_time_horizons,
+                groups_train=None if group_values is None else group_values[train_index],
             )
             for metric in metrics:
                 if metric == "c_index":
@@ -238,14 +304,23 @@ def evaluate_survival_model(
                 X_horizon, T_horizon, Y_horizon = generate_dataset_for_horizon(
                     X, T, Y, time_horizons[k]
                 )
-                for train_index, test_index in skf.split(X_horizon, Y_horizon):
+                horizon_group_values = horizon_groups(time_horizons[k])
+                horizon_splits = cross_validation_splits(
+                    len(X_horizon),
+                    y=Y_horizon,
+                    n_folds=n_folds,
+                    seed=random_state,
+                    groups=horizon_group_values,
+                    stratified=True,
+                )
+                for train_index, test_index in horizon_splits:
 
-                    X_train = X_horizon.loc[X_horizon.index[train_index]]
-                    Y_train = Y_horizon.loc[Y_horizon.index[train_index]]
-                    T_train = T_horizon.loc[T_horizon.index[train_index]]
-                    X_test = X_horizon.loc[X_horizon.index[test_index]]
-                    Y_test = Y_horizon.loc[Y_horizon.index[test_index]]
-                    T_test = T_horizon.loc[T_horizon.index[test_index]]
+                    X_train = X_horizon.iloc[train_index]
+                    Y_train = Y_horizon.iloc[train_index]
+                    T_train = T_horizon.iloc[train_index]
+                    X_test = X_horizon.iloc[test_index]
+                    Y_test = Y_horizon.iloc[test_index]
+                    T_test = T_horizon.iloc[test_index]
 
                     metric = "aucroc"
 
@@ -258,6 +333,11 @@ def evaluate_survival_model(
                         Y_train,
                         Y_test,
                         local_time_horizons,
+                        groups_train=(
+                            None
+                            if horizon_group_values is None
+                            else [horizon_group_values[index] for index in train_index]
+                        ),
                     )
 
                     cv_idx += 1

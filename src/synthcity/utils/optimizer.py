@@ -3,13 +3,14 @@ from pathlib import Path
 from typing import Any, Optional, Tuple, Type
 
 # third party
+import numpy as np
 import optuna
 import pandas as pd
-from sklearn.model_selection import train_test_split
 
 # synthcity absolute
 import synthcity.logger as log
-from synthcity.metrics.eval_detection import SyntheticDetectionMLP
+from sklearn.model_selection import train_test_split
+from synthcity.utils.evaluation import train_test_indices
 from synthcity.utils.redis_wrapper import RedisBackend
 from synthcity.utils.serialization import (
     dataframe_cols_hash,
@@ -31,14 +32,50 @@ def search_parameters(
     dry_run: bool = False,
     workspace: Path = Path("workspace"),
     predefined_params: dict = {},
+    groups: Any = None,
 ) -> Optional[dict]:
     direction = "minimize"
     metric = "detection_mlp"
 
     search_len = min(len(X), 10000)
-    X_target_train, X_target_test = train_test_split(
-        X.sample(search_len, random_state=random_state), random_state=random_state
-    )
+    target_groups = None
+    target_test_groups = None
+    if groups is None:
+        X_target = X.sample(search_len, random_state=random_state)
+        X_target_train, X_target_test = train_test_split(
+            X_target, random_state=random_state
+        )
+    else:
+        group_list = list(groups)
+        if len(group_list) != len(X):
+            raise ValueError(
+                f"groups length {len(group_list)} does not match data length {len(X)}"
+            )
+        group_values = np.empty(len(group_list), dtype=object)
+        group_values[:] = group_list
+        group_codes, _ = pd.factorize(group_values, sort=False)
+        group_order = np.random.default_rng(random_state).permutation(
+            np.unique(group_codes)
+        )
+        selected_indices = []
+        for group_code in group_order:
+            selected_indices.extend(np.flatnonzero(group_codes == group_code))
+            if len(selected_indices) >= search_len:
+                break
+
+        selected_indices = np.asarray(selected_indices, dtype=int)
+        X_target = X.iloc[selected_indices]
+        selected_groups = group_values[selected_indices]
+        train_idx, test_idx = train_test_indices(
+            len(X_target),
+            train_size=0.75,
+            seed=random_state,
+            groups=selected_groups,
+        )
+        X_target_train = X_target.iloc[train_idx]
+        X_target_test = X_target.iloc[test_idx]
+        target_groups = selected_groups[train_idx]
+        target_test_groups = selected_groups[test_idx]
 
     experiment_name = dataframe_cols_hash(X)
     study_name = f"hpo_tl_{model_template.name()}_{experiment_name}_metric_{metric}"
@@ -58,16 +95,35 @@ def search_parameters(
         log.info(f"[HPO] Evaluate {model_template.name()} for {kwargs}")
 
         try:
-            model.fit(X_target_train)
+            if target_groups is None:
+                model.fit(X_target_train)
+            else:
+                model.fit(X_target_train, groups=target_groups)
 
             X_fake = model.generate(len(X_target_test))
         except BaseException:
             return fail_score
 
-        score = SyntheticDetectionMLP().evaluate(
-            X_target_test,
-            X_fake,
-        )
+        from synthcity.metrics.eval_detection import SyntheticDetectionMLP
+
+        if target_test_groups is None:
+            score = SyntheticDetectionMLP().evaluate(X_target_test, X_fake)
+        else:
+            from synthcity.plugins.core.dataloader import GenericDataLoader
+
+            real_loader = GenericDataLoader(
+                X_target_test,
+                group_ids=target_test_groups,
+            )
+            if hasattr(X_fake, "dataframe"):
+                fake_frame = X_fake.dataframe()
+            else:
+                fake_frame = pd.DataFrame(X_fake)
+            fake_loader = GenericDataLoader(
+                fake_frame,
+                group_ids=[f"__hpo_synthetic__{index}" for index in range(len(fake_frame))],
+            )
+            score = SyntheticDetectionMLP().evaluate(real_loader, fake_loader)
 
         log.info(f"[HPO] Trial {kwargs}: score {score}")
         return score

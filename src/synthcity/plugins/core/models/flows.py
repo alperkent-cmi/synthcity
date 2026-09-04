@@ -30,6 +30,7 @@ from tqdm import tqdm
 # synthcity absolute
 from synthcity.metrics.weighted_metrics import WeightedMetrics
 from synthcity.utils.constants import DEVICE
+from synthcity.utils.evaluation import train_test_indices
 
 
 def create_alternating_binary_mask(features: int, even: bool = True) -> torch.Tensor:
@@ -116,6 +117,7 @@ class NormalizingFlows(nn.Module):
         tail_bound: float = 3,
         lr: float = 1e-3,
         apply_unconditional_transform: bool = True,
+        random_state: int = 0,
         base_distribution: str = "standard_normal",  # "standard_normal"
         linear_transform_type: str = "permutation",  # "lu", "permutation", "svd"
         base_transform_type: str = "rq-autoregressive",  # "affine-coupling", "quadratic-coupling", "rq-coupling", "affine-autoregressive", "quadratic-autoregressive", "rq-autoregressive"
@@ -138,6 +140,7 @@ class NormalizingFlows(nn.Module):
         self.num_bins = num_bins
         self.tail_bound = tail_bound
         self.apply_unconditional_transform = apply_unconditional_transform
+        self.random_state = random_state
         self.lr = lr
 
         self.base_distribution = base_distribution
@@ -161,11 +164,23 @@ class NormalizingFlows(nn.Module):
         with torch.no_grad():
             return self.flow.sample(count)
 
-    def _train_test_split(self, X: torch.Tensor) -> Tuple:
-        total = np.arange(0, len(X))
-        np.random.shuffle(total)
-        split = int(len(total) * 0.8)
-        train_idx, test_idx = total[:split], total[split:]
+    def _train_test_split(
+        self,
+        X: torch.Tensor,
+        groups: Any = None,
+    ) -> Tuple:
+        if groups is not None:
+            train_idx, test_idx = train_test_indices(
+                len(X),
+                train_size=0.8,
+                seed=self.random_state,
+                groups=groups,
+            )
+        else:
+            total = np.arange(0, len(X))
+            np.random.shuffle(total)
+            split = int(len(total) * 0.8)
+            train_idx, test_idx = total[:split], total[split:]
 
         X_train, X_val = X[train_idx], X[test_idx]
 
@@ -213,10 +228,10 @@ class NormalizingFlows(nn.Module):
 
         return score, patience, save
 
-    def fit(self, X: pd.DataFrame) -> Any:
+    def fit(self, X: pd.DataFrame, groups: Any = None) -> Any:
         # Load Dataset
         X = self._check_tensor(X).float().to(self.device)
-        X, X_val = self._train_test_split(X)
+        X, X_val = self._train_test_split(X, groups=groups)
 
         loader = self.dataloader(X)
 

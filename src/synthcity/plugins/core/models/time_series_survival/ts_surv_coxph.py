@@ -79,13 +79,16 @@ class CoxTimeSeriesSurvival(TimeSeriesSurvivalPlugin):
         observation_times: np.ndarray,
         T: np.ndarray,
         E: np.ndarray,
+        groups: Any = None,
     ) -> TimeSeriesSurvivalPlugin:
 
-        self.emb_model.fit(static, temporal, observation_times, T, E)
+        self.emb_model.fit(static, temporal, observation_times, T, E, groups=groups)
         embeddings = self.emb_model.predict_emb(
             static, temporal, observation_times
         ).reshape(len(T), -1)
-        self.pred_model.fit(pd.DataFrame(embeddings), pd.Series(T), pd.Series(E))
+        self.pred_model.fit(
+            pd.DataFrame(embeddings), pd.Series(T), pd.Series(E), groups=groups
+        )
 
         return self
 

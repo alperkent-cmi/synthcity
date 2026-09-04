@@ -403,9 +403,10 @@ class DECAFPlugin(Plugin):
             clipping_value=self.clipping_value,
             lambda_gradient_penalty=self.lambda_gradient_penalty,
             encoder_max_clusters=self.encoder_max_clusters,
+            groups=X.group_ids,
             device=self.device,
         )
-        self.baseline_generator.fit(X.dataframe())
+        self.baseline_generator.fit(X.dataframe(), groups=X.group_ids)
 
         # train the debiasing generator
         df = X.dataframe()

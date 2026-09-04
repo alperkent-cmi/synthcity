@@ -1,5 +1,5 @@
 # stdlib
-from typing import Any, List, Tuple
+from typing import Any, List, Optional, Tuple
 
 # third party
 import numpy as np
@@ -229,6 +229,7 @@ class TimeSeriesTabularVAE(torch.nn.Module):
         temporal_data: List[pd.DataFrame],
         observation_times: List,
         encoded: bool = False,
+        groups: Optional[Any] = None,
     ) -> Any:
         if encoded:
             static_enc = static_data
@@ -246,6 +247,7 @@ class TimeSeriesTabularVAE(torch.nn.Module):
             np.asarray(static_enc),
             np.asarray(temporal_enc),
             np.asarray(observation_times_enc),
+            groups=groups,
         )
         return self
 
