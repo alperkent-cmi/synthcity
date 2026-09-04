@@ -611,6 +611,318 @@ class JensenShannonDistance(StatisticalEvaluator):
         return results
 
 
+class FrozenSupportJensenShannonDistance(JensenShannonDistance):
+    """Leakage-safe, versioned elastic-net-style marginal JSD evidence.
+
+    ``evaluate_frozen_support`` fits candidate supports on ``train`` and final
+    supports on ``train`` plus ``tuning``. Neither synthetic nor evidence data
+    can add categorical values or continuous bin edges. Invalid variables are
+    retained in provenance and make the corresponding aggregate incomplete.
+    """
+
+    output_version = "jsd_elastic_net_v1"
+
+    def __init__(
+        self,
+        patient_id_column: Optional[str] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.patient_id_column = patient_id_column
+
+    @staticmethod
+    def name() -> str:
+        return "jensenshannon_dist_frozen"
+
+    def _cache_context(self) -> Dict[str, Any]:
+        context = super()._cache_context()
+        context.update({"patient_id_column": self.patient_id_column})
+        return context
+
+    @staticmethod
+    def _loader_frame(loader: DataLoader) -> pd.DataFrame:
+        return loader.dataframe().copy()
+
+    def _columns(self, frame: pd.DataFrame) -> list[str]:
+        columns = list(frame.columns)
+        if self.patient_id_column is not None:
+            columns = [column for column in columns if column != self.patient_id_column]
+        return columns
+
+    def _support(
+        self, frame: pd.DataFrame, column: str, feature_type: str
+    ) -> Tuple[list[Any], list[float], Optional[str]]:
+        series = frame[column]
+        if feature_type == "categorical":
+            tokens = sorted({self._categorical_token(value) for value in series.tolist()})
+            return tokens, [], None
+        values = self._numeric_values(series, column)
+        finite = values[np.isfinite(values)]
+        if len(finite) == 0:
+            return [], [], None
+        lower, upper = float(np.min(finite)), float(np.max(finite))
+        unique_count = len(np.unique(finite))
+        count = max(1, min(self._n_histogram_bins, unique_count))
+        if lower == upper:
+            edges = [lower - 0.5, upper + 0.5]
+        else:
+            edges = np.linspace(lower, upper, count + 1).tolist()
+        return [], edges, None
+
+    def _continuous_edges(self, frame: pd.DataFrame, column: str) -> list[float]:
+        """Build frozen edges from finite fit values without hiding bad values."""
+        values = pd.to_numeric(frame[column], errors="coerce").to_numpy(dtype=float)
+        finite = values[np.isfinite(values)]
+        if len(finite) == 0:
+            return []
+        lower, upper = float(np.min(finite)), float(np.max(finite))
+        count = max(1, min(self._n_histogram_bins, len(np.unique(finite))))
+        if lower == upper:
+            return [lower - 0.5, upper + 0.5]
+        return np.linspace(lower, upper, count + 1).tolist()
+
+    def _frozen_variable(
+        self,
+        fit_frame: pd.DataFrame,
+        observed_frame: pd.DataFrame,
+        column: str,
+        feature_type: str,
+        source_table: str,
+    ) -> Tuple[float, Dict[str, Any]]:
+        if feature_type == "continuous":
+            edges = self._continuous_edges(fit_frame, column)
+            support = []
+        else:
+            support, edges, _ = self._support(fit_frame, column, feature_type)
+        metadata: Dict[str, Any] = {
+            "feature_type": feature_type,
+            "source_table": source_table,
+            "fit_role": "real_fit",
+            "support": None,
+            "bin_edges": None,
+            "outcomes": [],
+            "distance": None,
+        }
+        if fit_frame[column].isna().any() or observed_frame[column].isna().any():
+            metadata["outcomes"].append("missing")
+        if fit_frame[column].duplicated().any() or observed_frame[column].duplicated().any():
+            metadata["outcomes"].append("duplicate")
+        if feature_type == "continuous":
+            for series in (fit_frame[column], observed_frame[column]):
+                numeric = pd.to_numeric(series, errors="coerce")
+                non_finite = series.notna() & (
+                    numeric.isin([np.inf, -np.inf]) | numeric.isna()
+                )
+                if bool(non_finite.any()):
+                    metadata["outcomes"].append("non_finite")
+        if feature_type == "categorical":
+            metadata["support"] = [
+                {"kind": k, "type": t, "repr": r} for k, t, r in support
+            ]
+            fit_tokens = [self._categorical_token(v) for v in fit_frame[column].tolist()]
+            observed_tokens = [self._categorical_token(v) for v in observed_frame[column].tolist()]
+            unknown = sorted(set(observed_tokens) - set(support))
+            if unknown:
+                metadata["outcomes"].append("unknown")
+            if not support:
+                metadata["outcomes"].append("absent")
+            observed_counts = np.asarray([observed_tokens.count(token) for token in support], dtype=float)
+            fit_counts = np.asarray([fit_tokens.count(token) for token in support], dtype=float)
+        else:
+            metadata["bin_edges"] = edges
+            fit_values = self._numeric_values(fit_frame[column], column)
+            observed_values = self._numeric_values(observed_frame[column], column)
+            fit_finite = fit_values[np.isfinite(fit_values)]
+            observed_finite = observed_values[np.isfinite(observed_values)]
+            if len(edges) == 0:
+                metadata["outcomes"].append("absent")
+                fit_counts = np.asarray([len(fit_values)], dtype=float)
+                observed_counts = np.asarray([len(observed_values)], dtype=float)
+            else:
+                under = (observed_finite < edges[0]).any()
+                over = (observed_finite > edges[-1]).any()
+                if under:
+                    metadata["outcomes"].append("underflow")
+                if over:
+                    metadata["outcomes"].append("overflow")
+                fit_counts = np.histogram(fit_finite, bins=edges)[0].astype(float)
+                observed_counts = np.histogram(observed_finite, bins=edges)[0].astype(float)
+                fit_counts = np.concatenate([fit_counts, [float(np.isnan(fit_values).sum())]])
+                observed_counts = np.concatenate([observed_counts, [float(np.isnan(observed_values).sum())]])
+        if not len(fit_counts) or not len(observed_counts):
+            metadata["outcomes"].append("absent")
+        distance = float(
+            jensenshannon(
+                (fit_counts + 1) / (fit_counts.sum() + len(fit_counts)),
+                (observed_counts + 1) / (observed_counts.sum() + len(observed_counts)),
+            )
+        )
+        metadata["distance"] = distance
+        return distance, metadata
+
+    def _feature_type_from_loader(self, loader: DataLoader, column: str) -> str:
+        feature_type = self.feature_types.get(column)
+        if feature_type is None:
+            feature_type = getattr(loader, "feature_types", {}).get(column)
+        if feature_type is None:
+            series = loader[column]
+            feature_type = (
+                "categorical"
+                if pd.api.types.is_object_dtype(series)
+                or isinstance(series.dtype, pd.CategoricalDtype)
+                or pd.api.types.is_bool_dtype(series)
+                else "continuous"
+            )
+        if feature_type not in {"categorical", "continuous"}:
+            raise ValueError(f"Unsupported feature type {feature_type!r} for {column!r}")
+        return feature_type
+
+    def _score_frame(
+        self,
+        fit_frame: pd.DataFrame,
+        observed_frame: pd.DataFrame,
+        schema_loader: DataLoader,
+    ) -> Tuple[Optional[float], Dict[str, Any]]:
+        columns = self._columns(fit_frame)
+        variables: Dict[str, Any] = {}
+        distances: list[float] = []
+        for column in columns:
+            if column not in observed_frame:
+                feature_type = self._feature_type_from_loader(schema_loader, column)
+                source_table = self.source_table.get(
+                    column,
+                    getattr(schema_loader, "source_table", {}).get(
+                        column, "unassigned"
+                    ),
+                )
+                source_table = "unassigned" if source_table is None else str(source_table)
+                support: Optional[list[dict[str, str]]] = None
+                bin_edges: Optional[list[float]] = None
+                if feature_type == "categorical":
+                    support_tokens, _, _ = self._support(
+                        fit_frame, column, feature_type
+                    )
+                    support = [
+                        {"kind": kind, "type": value_type, "repr": representation}
+                        for kind, value_type, representation in support_tokens
+                    ]
+                else:
+                    bin_edges = self._continuous_edges(fit_frame, column)
+                variables[column] = {
+                    "feature_type": feature_type,
+                    "source_table": source_table,
+                    "fit_role": "real_fit",
+                    "support": support,
+                    "bin_edges": bin_edges,
+                    "outcomes": ["absent"],
+                    "distance": None,
+                }
+                continue
+            feature_type = None
+            source_table = "unassigned"
+            frozen_edges: Optional[list[float]] = None
+            try:
+                feature_type = self._feature_type_from_loader(schema_loader, column)
+                source_table = self.source_table.get(
+                    column, getattr(schema_loader, "source_table", {}).get(column, "unassigned")
+                )
+                source_table = "unassigned" if source_table is None else str(source_table)
+                if feature_type == "continuous":
+                    frozen_edges = self._continuous_edges(fit_frame, column)
+                distance, metadata = self._frozen_variable(
+                    fit_frame,
+                    observed_frame,
+                    column,
+                    feature_type,
+                    source_table,
+                )
+            except (TypeError, ValueError, RuntimeError) as error:
+                distance, metadata = float("nan"), {
+                    "feature_type": feature_type,
+                    "source_table": source_table,
+                    "fit_role": "real_fit",
+                    "support": None,
+                    "bin_edges": frozen_edges,
+                    "outcomes": ["non_finite" if "finite" in str(error) else "invalid"],
+                    "error": str(error),
+                    "distance": None,
+                }
+            variables[column] = metadata
+            distances.append(distance)
+        invalid_outcomes = {
+            "missing", "unknown", "underflow", "overflow", "absent", "non_finite", "invalid"
+        }
+        invalid = [
+            column
+            for column, data in variables.items()
+            if invalid_outcomes.intersection(data.get("outcomes", []))
+        ]
+        if invalid or not distances:
+            aggregate = None
+        else:
+            values = np.asarray(distances, dtype=float)
+            weights = np.full(len(values), 1.0 / len(values))
+            aggregate = float(np.clip(0.5 * np.sum(weights * values) + 0.5 * np.sqrt(np.sum(weights * values**2)), 0.0, 1.0))
+        source_tables: Dict[str, list[float]] = {}
+        for variable in variables.values():
+            if variable.get("distance") is not None:
+                source_tables.setdefault(variable.get("source_table", "unassigned"), []).append(variable["distance"])
+        source_table_summary = {
+            table: {"n_variables": len(values), "mean_distance": float(np.mean(values))}
+            for table, values in source_tables.items()
+        }
+        return aggregate, {
+            "variables": variables,
+            "invalid_variables": invalid,
+            "complete": not invalid and bool(distances),
+            "aggregation_contract": {
+                "schema_version": "source-table-aggregation-v1",
+                "source_table_macro_v2": {
+                    "definition": "mean of per-source-table mean variable distances",
+                    "source_tables": source_table_summary,
+                    "value": float(np.mean([item["mean_distance"] for item in source_table_summary.values()])) if source_table_summary else None,
+                },
+                "max_variable_v2": {
+                    "definition": "maximum distance across declared variables",
+                    "value": float(max((item["distance"] for item in variables.values() if item.get("distance") is not None), default=0.0)),
+                },
+            },
+        }
+
+    def evaluate_frozen_support(
+        self,
+        train: DataLoader,
+        tuning: DataLoader,
+        synthetic: DataLoader,
+        evidence: Optional[DataLoader] = None,
+    ) -> Dict[str, Any]:
+        """Evaluate candidate and final evidence using frozen real-data supports."""
+        train_frame = self._loader_frame(train)
+        tuning_frame = self._loader_frame(tuning)
+        observed = self._loader_frame(synthetic)
+        final_frame = pd.concat([train_frame, tuning_frame], ignore_index=True)
+        candidate, candidate_meta = self._score_frame(train_frame, observed, train)
+        final, final_meta = self._score_frame(final_frame, observed, train)
+        result: Dict[str, Any] = {
+            "candidate": candidate,
+            "final": final,
+            "version": self.output_version,
+            "metadata": {"candidate": candidate_meta, "final": final_meta, "patient_id_column": self.patient_id_column},
+        }
+        if evidence is not None:
+            evidence_frame = self._loader_frame(evidence)
+            evidence_score, evidence_meta = self._score_frame(final_frame, evidence_frame, train)
+            result["evidence"] = evidence_score
+            result["metadata"]["evidence"] = evidence_meta
+        self._result_metadata = result["metadata"]
+        return result
+
+
+# Descriptive aliases for callers using either terminology from the contract.
+ElasticNetJensenShannonDistance = FrozenSupportJensenShannonDistance
+FrozenSupportJSD = FrozenSupportJensenShannonDistance
+
+
 class WassersteinDistance(StatisticalEvaluator):
     """
     .. inheritance-diagram:: synthcity.metrics.eval_statistical.WassersteinDistance
