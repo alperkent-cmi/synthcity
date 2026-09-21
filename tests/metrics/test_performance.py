@@ -1,7 +1,10 @@
 # stdlib
+import os
 from pathlib import Path
+import shutil
 import sys
 from typing import Optional, Type
+from uuid import uuid4
 
 # third party
 import numpy as np
@@ -36,8 +39,106 @@ from synthcity.plugins.core.models.time_series_survival.benchmarks import (
 )
 from synthcity.plugins.core.models.ts_model import TimeSeriesModel
 from synthcity.utils.datasets.time_series.google_stocks import GoogleStocksDataloader
+from synthcity.utils.datasets.time_series import google_stocks as google_stocks_dataset
 from synthcity.utils.datasets.time_series.pbc import PBCDataloader
+from synthcity.utils.datasets.time_series import pbc as pbc_dataset
 from synthcity.utils.evaluation import cross_validation_splits
+
+
+
+def _repository_root() -> Path:
+    """Find outer SynthData root, or this standalone SynthCity checkout root."""
+    test_path = Path(__file__).resolve()
+    candidates = tuple(test_path.parents)
+    synthdata_roots = [
+        candidate
+        for candidate in candidates
+        if (candidate / "AGENTS.md").is_file() and (candidate / "pyproject.toml").is_file()
+    ]
+    if synthdata_roots:
+        return synthdata_roots[-1]
+
+    checkout_roots = [
+        candidate
+        for candidate in candidates
+        if (candidate / ".git").exists() and (candidate / "pyproject.toml").is_file()
+    ]
+    if checkout_roots:
+        return checkout_roots[0]
+    raise RuntimeError(f"Could not identify checkout root for {test_path}")
+
+
+REPOSITORY_ROOT = _repository_root()
+_OWNED_WORKSPACES: dict[Path, str] = {}
+_OWNER_MARKER = ".synthcity-test-owner"
+
+
+def _owned_workspace(name: str) -> Path:
+    """Create one validated, checkout-local workspace owned by this test."""
+    tmp_root = REPOSITORY_ROOT / "tmp"
+    scratch_root = tmp_root / "synthcity-tests"
+    if tmp_root.is_symlink() or scratch_root.is_symlink():
+        raise RuntimeError(f"Refusing symlink scratch root: {scratch_root}")
+    scratch_root = scratch_root.resolve()
+    workspace = scratch_root / f"{name}-{os.getpid()}-{uuid4().hex}"
+    if workspace.is_symlink():
+        raise RuntimeError(f"Refusing symlink workspace: {workspace}")
+    workspace = workspace.resolve()
+    if not workspace.is_relative_to(scratch_root):
+        raise RuntimeError(f"Refusing workspace outside checkout scratch: {workspace}")
+    scratch_root.mkdir(parents=True, exist_ok=True)
+    workspace.mkdir(parents=False, exist_ok=False)
+    marker = workspace / _OWNER_MARKER
+    token = f"{os.getpid()}:{uuid4().hex}"
+    try:
+        with marker.open("x", encoding="utf-8") as marker_file:
+            marker_file.write(f"{token}\n")
+    except OSError as exc:
+        if workspace.is_dir() and not workspace.is_symlink() and not any(workspace.iterdir()):
+            workspace.rmdir()
+        else:
+            raise RuntimeError(
+                f"Workspace setup failed with ambiguous ownership state: {workspace}"
+            ) from exc
+        raise RuntimeError(f"Workspace marker setup failed: {workspace}") from exc
+    _OWNED_WORKSPACES[workspace] = token
+    return workspace
+
+
+def _remove_owned_workspace(workspace: Path) -> None:
+    """Remove only this test's validated workspace."""
+    if workspace.is_symlink():
+        raise RuntimeError(f"Refusing cleanup of symlink workspace: {workspace}")
+    tmp_root = REPOSITORY_ROOT / "tmp"
+    scratch_root = tmp_root / "synthcity-tests"
+    if tmp_root.is_symlink() or scratch_root.is_symlink():
+        raise RuntimeError(f"Refusing symlink scratch root: {scratch_root}")
+    scratch_root = scratch_root.resolve()
+    resolved = workspace.resolve()
+    marker = resolved / _OWNER_MARKER
+    if (
+        not resolved.is_absolute()
+        or not resolved.is_relative_to(scratch_root)
+        or resolved.parent != scratch_root
+        or resolved not in _OWNED_WORKSPACES
+        or not resolved.is_dir()
+        or not marker.is_file()
+        or marker.is_symlink()
+        or marker.read_text(encoding="utf-8") != f"{_OWNED_WORKSPACES.get(resolved)}\n"
+    ):
+        raise RuntimeError(f"Refusing cleanup outside owned scratch: {resolved}")
+    shutil.rmtree(resolved)
+    del _OWNED_WORKSPACES[resolved]
+
+
+@pytest.fixture
+def metric_workspace() -> Path:
+    """Provide one fresh, checkout-local workspace for this test."""
+    workspace = _owned_workspace("performance-metric")
+    try:
+        yield workspace
+    finally:
+        _remove_owned_workspace(workspace)
 
 
 @pytest.mark.parametrize("test_plugin", [Plugins().get("marginal_distributions")])
@@ -50,7 +151,7 @@ from synthcity.utils.evaluation import cross_validation_splits
     ],
 )
 def test_evaluate_performance_classifier(
-    test_plugin: Plugin, evaluator_t: Type
+    test_plugin: Plugin, evaluator_t: Type, metric_workspace: Path
 ) -> None:
     X, y = load_iris(return_X_y=True, as_frame=True)
     X["target"] = y
@@ -58,7 +159,7 @@ def test_evaluate_performance_classifier(
     test_plugin.fit(Xloader)
     X_gen = test_plugin.generate(100)
 
-    evaluator = evaluator_t(use_cache=False)
+    evaluator = evaluator_t(use_cache=False, workspace=metric_workspace)
     good_score = evaluator.evaluate(
         Xloader,
         X_gen,
@@ -107,7 +208,7 @@ def test_evaluate_performance_classifier(
 @pytest.mark.slow_1
 @pytest.mark.slow
 def test_evaluate_feature_importance_rank_dist_clf(
-    distance: str, test_plugin: Plugin
+    distance: str, test_plugin: Plugin, metric_workspace: Path
 ) -> None:
     X, y = load_iris(return_X_y=True, as_frame=True)
     X["target"] = y
@@ -118,6 +219,7 @@ def test_evaluate_feature_importance_rank_dist_clf(
     evaluator = FeatureImportanceRankDistance(
         distance=distance,
         use_cache=False,
+        workspace=metric_workspace,
     )
     good_score = evaluator.evaluate(
         Xloader,
@@ -131,8 +233,12 @@ def test_evaluate_feature_importance_rank_dist_clf(
     assert good_score["pvalue"] > 0
 
 
-def test_feature_importance_rank_distance_orients_correlation_as_maximize() -> None:
-    evaluator = FeatureImportanceRankDistance(use_cache=False)
+def test_feature_importance_rank_distance_orients_correlation_as_maximize(
+    metric_workspace: Path,
+) -> None:
+    evaluator = FeatureImportanceRankDistance(
+        use_cache=False, workspace=metric_workspace
+    )
 
     result = evaluator._summarize_distance(
         np.asarray([1.0, 2.0, 3.0]),
@@ -151,7 +257,7 @@ def test_feature_importance_rank_distance_orients_correlation_as_maximize() -> N
 
 def test_feature_importance_rank_distance_cache_preserves_metadata(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+    metric_workspace: Path,
 ) -> None:
     class RecordingClassifier:
         def __init__(self, **kwargs: object) -> None:
@@ -191,7 +297,7 @@ def test_feature_importance_rank_distance_cache_preserves_metadata(
         distance="spearman",
         task_type="classification",
         use_cache=True,
-        workspace=tmp_path,
+        workspace=metric_workspace,
     )
     first_result = first.evaluate(real, synthetic)
 
@@ -199,7 +305,7 @@ def test_feature_importance_rank_distance_cache_preserves_metadata(
         distance="spearman",
         task_type="classification",
         use_cache=True,
-        workspace=tmp_path,
+        workspace=metric_workspace,
     )
     second_result = second.evaluate(real, synthetic)
 
@@ -210,17 +316,17 @@ def test_feature_importance_rank_distance_cache_preserves_metadata(
 
 
 def test_feature_importance_rank_distance_cache_identity_includes_distance(
-    tmp_path: Path,
+    metric_workspace: Path,
 ) -> None:
     kendall = FeatureImportanceRankDistance(
         distance="kendall",
         task_type="classification",
-        workspace=tmp_path,
+        workspace=metric_workspace,
     )
     spearman = FeatureImportanceRankDistance(
         distance="spearman",
         task_type="classification",
-        workspace=tmp_path,
+        workspace=metric_workspace,
     )
 
     assert kendall.result_metadata()["distance"] == "kendall"
@@ -228,8 +334,12 @@ def test_feature_importance_rank_distance_cache_identity_includes_distance(
     assert kendall._distance != spearman._distance
 
 
-def test_feature_importance_rank_distance_rejects_constant_rankings() -> None:
-    evaluator = FeatureImportanceRankDistance(use_cache=False)
+def test_feature_importance_rank_distance_rejects_constant_rankings(
+    metric_workspace: Path,
+) -> None:
+    evaluator = FeatureImportanceRankDistance(
+        use_cache=False, workspace=metric_workspace
+    )
 
     with pytest.raises(RuntimeError, match="correlation is non-finite"):
         evaluator._summarize_distance(
@@ -239,8 +349,12 @@ def test_feature_importance_rank_distance_rejects_constant_rankings() -> None:
 
 
 @pytest.mark.parametrize("distance", ["kendall", "spearman"])
-def test_feature_importance_rank_distance_detects_disagreement(distance: str) -> None:
-    evaluator = FeatureImportanceRankDistance(distance=distance, use_cache=False)
+def test_feature_importance_rank_distance_detects_disagreement(
+    distance: str, metric_workspace: Path
+) -> None:
+    evaluator = FeatureImportanceRankDistance(
+        distance=distance, use_cache=False, workspace=metric_workspace
+    )
 
     result = evaluator._summarize_distance(
         np.asarray([1.0, 2.0, 3.0]),
@@ -299,8 +413,12 @@ def test_feature_importance_rank_distance_aggregates_supported_shap_shapes(
     assert importance == pytest.approx(expected)
 
 
-def test_feature_importance_rank_distance_reports_contextual_shap_shape_failure() -> None:
-    evaluator = FeatureImportanceRankDistance(task_type="classification", use_cache=False)
+def test_feature_importance_rank_distance_reports_contextual_shap_shape_failure(
+    metric_workspace: Path,
+) -> None:
+    evaluator = FeatureImportanceRankDistance(
+        task_type="classification", use_cache=False, workspace=metric_workspace
+    )
 
     with pytest.raises(
         RuntimeError,
@@ -315,7 +433,7 @@ def test_feature_importance_rank_distance_reports_contextual_shap_shape_failure(
 
 def test_feature_importance_rank_distance_evaluates_classification_shap(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+    metric_workspace: Path,
 ) -> None:
     class RecordingClassifier:
         def __init__(self, **kwargs: object) -> None:
@@ -373,7 +491,7 @@ def test_feature_importance_rank_distance_evaluates_classification_shap(
     result = FeatureImportanceRankDistance(
         task_type="classification",
         use_cache=False,
-        workspace=tmp_path,
+        workspace=metric_workspace,
     ).evaluate(real, synthetic)
 
     assert result["corr"] == pytest.approx(-1.0)
@@ -382,7 +500,7 @@ def test_feature_importance_rank_distance_evaluates_classification_shap(
 
 def test_feature_importance_rank_distance_evaluates_regression_shap(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+    metric_workspace: Path,
 ) -> None:
     class RecordingRegressor:
         def __init__(self, **kwargs: object) -> None:
@@ -428,7 +546,7 @@ def test_feature_importance_rank_distance_evaluates_regression_shap(
     result = FeatureImportanceRankDistance(
         task_type="regression",
         use_cache=False,
-        workspace=tmp_path,
+        workspace=metric_workspace,
     ).evaluate(real, synthetic)
 
     assert result["corr"] == pytest.approx(1.0)
@@ -437,6 +555,7 @@ def test_feature_importance_rank_distance_evaluates_regression_shap(
 
 def test_feature_importance_rank_distance_reports_synthetic_fit_failure(
     monkeypatch,
+    metric_workspace: Path,
 ) -> None:
     class FailingClassifier:
         def __init__(self, **kwargs):
@@ -457,7 +576,9 @@ def test_feature_importance_rank_distance_reports_synthetic_fit_failure(
         }
     )
     loader = GenericDataLoader(data, target_column="target")
-    evaluator = FeatureImportanceRankDistance(task_type="classification", use_cache=False)
+    evaluator = FeatureImportanceRankDistance(
+        task_type="classification", use_cache=False, workspace=metric_workspace
+    )
 
     with pytest.raises(RuntimeError, match="synthetic classification data"):
         evaluator.evaluate(loader, loader)
@@ -465,7 +586,7 @@ def test_feature_importance_rank_distance_reports_synthetic_fit_failure(
 
 def test_feature_importance_rank_distance_evaluates_survival_shap(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+    metric_workspace: Path,
 ) -> None:
     class RecordingSurvivalModel:
         def __init__(self, **kwargs: object) -> None:
@@ -512,7 +633,7 @@ def test_feature_importance_rank_distance_evaluates_survival_shap(
     result = FeatureImportanceRankDistance(
         task_type="survival_analysis",
         use_cache=False,
-        workspace=tmp_path,
+        workspace=metric_workspace,
     ).evaluate(real, synthetic)
 
     assert result["corr"] == pytest.approx(1.0)
@@ -521,7 +642,7 @@ def test_feature_importance_rank_distance_evaluates_survival_shap(
 
 def test_feature_importance_rank_distance_reports_real_fit_failure(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+    metric_workspace: Path,
 ) -> None:
     class FailingRealClassifier:
         def __init__(self, **kwargs: object) -> None:
@@ -566,13 +687,13 @@ def test_feature_importance_rank_distance_reports_real_fit_failure(
         FeatureImportanceRankDistance(
             task_type="classification",
             use_cache=False,
-            workspace=tmp_path,
+            workspace=metric_workspace,
         ).evaluate(real, synthetic)
 
 
 def test_feature_importance_rank_distance_reports_shap_failure(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+    metric_workspace: Path,
 ) -> None:
     class RecordingClassifier:
         def __init__(self, **kwargs: object) -> None:
@@ -612,7 +733,7 @@ def test_feature_importance_rank_distance_reports_shap_failure(
         FeatureImportanceRankDistance(
             task_type="classification",
             use_cache=False,
-            workspace=tmp_path,
+            workspace=metric_workspace,
         ).evaluate(loader, loader)
 
 
@@ -815,11 +936,15 @@ def test_standard_performance_mlp_forwards_grouped_fit_ids(monkeypatch) -> None:
         group_ids=[f"synthetic-{index}" for index in range(20)],
     )
 
-    result = PerformanceEvaluatorMLP(
-        n_folds=2,
-        use_cache=False,
-        workspace=Path("tmp"),
-    ).evaluate(real, synthetic)
+    workspace = _owned_workspace("performance-mlp")
+    try:
+        result = PerformanceEvaluatorMLP(
+            n_folds=2,
+            use_cache=False,
+            workspace=workspace,
+        ).evaluate(real, synthetic)
+    finally:
+        _remove_owned_workspace(workspace)
 
     assert result["gt"] == pytest.approx(0.5)
     assert len(RecordingMLP.fitted_groups) == 6
@@ -828,7 +953,7 @@ def test_standard_performance_mlp_forwards_grouped_fit_ids(monkeypatch) -> None:
 
 @pytest.mark.parametrize("task_type", ["classification", "regression"])
 def test_standard_performance_model_failure_is_not_a_numeric_sentinel(
-    monkeypatch, task_type: str
+    monkeypatch, task_type: str, metric_workspace: Path
 ) -> None:
     class FailingEstimator:
         def __init__(self, **kwargs):
@@ -846,9 +971,13 @@ def test_standard_performance_model_failure_is_not_a_numeric_sentinel(
     )
     loader = GenericDataLoader(data, target_column="target")
     evaluator = (
-        PerformanceEvaluatorLinear(task_type=task_type, use_cache=False)
+        PerformanceEvaluatorLinear(
+            task_type=task_type, use_cache=False, workspace=metric_workspace
+        )
         if task_type == "classification"
-        else PerformanceEvaluatorLinear(task_type=task_type, use_cache=False)
+        else PerformanceEvaluatorLinear(
+            task_type=task_type, use_cache=False, workspace=metric_workspace
+        )
     )
     target = (
         "synthcity.metrics.eval_performance.LogisticRegression"
@@ -872,7 +1001,7 @@ def test_standard_performance_model_failure_is_not_a_numeric_sentinel(
 )
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux only for faster results")
 def test_evaluate_performance_regression(
-    test_plugin: Plugin, evaluator_t: Type
+    test_plugin: Plugin, evaluator_t: Type, metric_workspace: Path
 ) -> None:
     X, y = load_diabetes(return_X_y=True, as_frame=True)
     X["target"] = y
@@ -885,6 +1014,7 @@ def test_evaluate_performance_regression(
     evaluator = evaluator_t(
         task_type="regression",
         use_cache=False,
+        workspace=metric_workspace,
     )
     good_score = evaluator.evaluate(
         Xloader,
@@ -927,7 +1057,7 @@ def test_evaluate_performance_regression(
 @pytest.mark.slow_1
 @pytest.mark.slow
 def test_evaluate_feature_importance_rank_dist_reg(
-    distance: str, test_plugin: Plugin
+    distance: str, test_plugin: Plugin, metric_workspace: Path
 ) -> None:
     X, y = load_diabetes(return_X_y=True, as_frame=True)
     X["target"] = y
@@ -940,6 +1070,7 @@ def test_evaluate_feature_importance_rank_dist_reg(
         distance=distance,
         task_type="regression",
         use_cache=False,
+        workspace=metric_workspace,
     )
     score = evaluator.evaluate(
         Xloader,
@@ -965,7 +1096,7 @@ def test_evaluate_feature_importance_rank_dist_reg(
     ],
 )
 def test_evaluate_performance_survival_analysis(
-    test_plugin: Plugin, evaluator_t: Type
+    test_plugin: Plugin, evaluator_t: Type, metric_workspace: Path
 ) -> None:
     X = load_rossi()
     T = X["week"]
@@ -983,6 +1114,7 @@ def test_evaluate_performance_survival_analysis(
     evaluator = evaluator_t(
         task_type="survival_analysis",
         use_cache=False,
+        workspace=metric_workspace,
     )
     good_score = evaluator.evaluate(
         Xloader,
@@ -1042,7 +1174,7 @@ def test_evaluate_performance_survival_analysis(
 @pytest.mark.slow_1
 @pytest.mark.slow
 def test_evaluate_feature_importance_rank_dist_surv(
-    distance: str, test_plugin: Plugin
+    distance: str, test_plugin: Plugin, metric_workspace: Path
 ) -> None:
     X = load_rossi()
     T = X["week"]
@@ -1062,6 +1194,7 @@ def test_evaluate_feature_importance_rank_dist_surv(
         distance=distance,
         task_type="survival_analysis",
         use_cache=False,
+        workspace=metric_workspace,
     )
     good_score = evaluator.evaluate(
         Xloader,
@@ -1085,7 +1218,10 @@ def test_evaluate_feature_importance_rank_dist_surv(
 )
 @pytest.mark.parametrize("target", [None, "target", "sepal width (cm)"])
 def test_evaluate_performance_custom_labels(
-    test_plugin: Plugin, evaluator_t: Type, target: Optional[str]
+    test_plugin: Plugin,
+    evaluator_t: Type,
+    target: Optional[str],
+    metric_workspace: Path,
 ) -> None:
     X, y = load_iris(return_X_y=True, as_frame=True)
     X["target"] = y
@@ -1094,7 +1230,7 @@ def test_evaluate_performance_custom_labels(
     test_plugin.fit(Xloader)
     X_gen = test_plugin.generate(100)
 
-    evaluator = evaluator_t(use_cache=False)
+    evaluator = evaluator_t(use_cache=False, workspace=metric_workspace)
 
     good_score = evaluator.evaluate(
         Xloader,
@@ -1116,8 +1252,14 @@ def test_evaluate_performance_custom_labels(
     ],
 )
 def test_evaluate_performance_time_series(
-    test_plugin: Plugin, evaluator_t: Type
+    test_plugin: Plugin,
+    evaluator_t: Type,
+    metric_workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    cache_path = metric_workspace / "time-series-cache" / "goog.csv"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(google_stocks_dataset, "df_path", cache_path)
     (
         static_data,
         temporal_data,
@@ -1137,6 +1279,7 @@ def test_evaluate_performance_time_series(
     evaluator = evaluator_t(
         task_type="time_series",
         use_cache=False,
+        workspace=metric_workspace,
     )
     good_score = evaluator.evaluate(
         data,
@@ -1233,8 +1376,14 @@ def test_time_series_classification_uses_group_disjoint_cv() -> None:
 )
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux only for faster results")
 def test_evaluate_performance_time_series_survival(
-    test_plugin: Plugin, evaluator_t: Type
+    test_plugin: Plugin,
+    evaluator_t: Type,
+    metric_workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    cache_path = metric_workspace / "time-series-cache" / "pbc2.csv"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(pbc_dataset, "df_path", cache_path)
     static_data, temporal_data, observation_times, outcome = PBCDataloader().load()
 
     T, E = outcome
@@ -1252,6 +1401,7 @@ def test_evaluate_performance_time_series_survival(
 
     evaluator = evaluator_t(
         task_type="time_series_survival",
+        workspace=metric_workspace,
     )
 
     good_score = evaluator.evaluate(
@@ -1277,16 +1427,20 @@ def test_evaluate_performance_time_series_survival(
 @pytest.mark.slow_1
 @pytest.mark.slow
 def test_image_support_perf() -> None:
-    dataset = datasets.MNIST(".", download=True)
+    workspace = _owned_workspace("performance-image")
+    try:
+        dataset = datasets.MNIST(workspace, download=True)
 
-    X1 = ImageDataLoader(dataset).sample(100)
-    X2 = ImageDataLoader(dataset).sample(100)
+        X1 = ImageDataLoader(dataset).sample(100)
+        X2 = ImageDataLoader(dataset).sample(100)
 
-    for evaluator in [
-        PerformanceEvaluatorMLP,
-    ]:
-        score = evaluator().evaluate(X1, X2)
-        assert isinstance(score, dict)
-        for k in score:
-            assert score[k] >= 0
-            assert not np.isnan(score[k])
+        for evaluator in [
+            PerformanceEvaluatorMLP,
+        ]:
+            score = evaluator(workspace=workspace).evaluate(X1, X2)
+            assert isinstance(score, dict)
+            for k in score:
+                assert score[k] >= 0
+                assert not np.isnan(score[k])
+    finally:
+        _remove_owned_workspace(workspace)

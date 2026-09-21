@@ -1,10 +1,14 @@
 # stdlib
 import hashlib
 import json
+import os
 import platform
+import shutil
+import time
 from copy import copy
 from pathlib import Path
-from typing import Any, List
+from typing import Any, Generator, List
+from uuid import uuid4
 
 # third party
 import numpy as np
@@ -28,6 +32,100 @@ from synthcity.plugins.core.distribution import Distribution
 from synthcity.plugins.core.plugin import Plugin
 from synthcity.plugins.core.schema import Schema
 from synthcity.plugins.generic.plugin_dummy_sampler import plugin as dummy_sampler_plugin
+
+
+_WORKSPACE_MARKER = ".synthcity-owned-workspace"
+_OWNED_WORKSPACES: dict[Path, str] = {}
+
+
+def _repository_root() -> Path:
+    """Find outer SynthData root, or nearest standalone SynthCity checkout."""
+    test_path = Path(__file__).resolve()
+    candidates = tuple(test_path.parents)
+    synthdata_roots = [
+        candidate
+        for candidate in candidates
+        if (candidate / "AGENTS.md").is_file() and (candidate / "pyproject.toml").is_file()
+    ]
+    if synthdata_roots:
+        return synthdata_roots[-1]
+    checkout_roots = [
+        candidate
+        for candidate in candidates
+        if (candidate / ".git").exists() and (candidate / "pyproject.toml").is_file()
+    ]
+    if checkout_roots:
+        return checkout_roots[0]
+    raise RuntimeError(f"Could not identify checkout root for {test_path}")
+
+
+def _new_owned_workspace() -> Path:
+    """Create unique benchmark workspace below checkout-local scratch."""
+    scratch_root = _repository_root() / "tmp"
+    if scratch_root.is_symlink():
+        raise RuntimeError(f"Refusing symlink scratch root: {scratch_root}")
+    scratch_root = scratch_root.resolve()
+    scratch_root.mkdir(parents=True, exist_ok=True)
+    workspace = scratch_root / f"benchmark-{os.getpid()}-{time.time_ns()}-{uuid4().hex}"
+    if workspace.is_symlink():
+        raise RuntimeError(f"Refusing symlink workspace: {workspace}")
+    workspace = workspace.resolve()
+    if not workspace.is_relative_to(scratch_root):
+        raise RuntimeError(f"Refusing workspace outside checkout scratch: {workspace}")
+    workspace.mkdir(parents=False, exist_ok=False)
+    token = uuid4().hex
+    marker = workspace / _WORKSPACE_MARKER
+    try:
+        with marker.open("x", encoding="utf-8") as marker_file:
+            marker_file.write(f"{token}\n")
+    except OSError as exc:
+        if workspace.is_dir() and not workspace.is_symlink() and not any(workspace.iterdir()):
+            workspace.rmdir()
+        else:
+            raise RuntimeError(
+                f"Workspace setup failed with ambiguous ownership state: {workspace}"
+            ) from exc
+        raise RuntimeError(f"Workspace marker setup failed: {workspace}") from exc
+    _OWNED_WORKSPACES[workspace] = token
+    return workspace
+
+
+def _remove_owned_workspace(workspace: Path) -> None:
+    """Remove only a workspace created by this module after containment checks."""
+    if workspace.is_symlink():
+        raise RuntimeError(f"Refusing cleanup of symlink workspace: {workspace}")
+    scratch_root = _repository_root() / "tmp"
+    if scratch_root.is_symlink():
+        raise RuntimeError(f"Refusing symlink scratch root: {scratch_root}")
+    scratch_root = scratch_root.resolve()
+    resolved = workspace.resolve()
+    marker = resolved / _WORKSPACE_MARKER
+    token = _OWNED_WORKSPACES.get(resolved)
+    if not resolved.is_relative_to(scratch_root):
+        raise RuntimeError(f"Refusing cleanup outside checkout scratch: {resolved}")
+    if (
+        token is None
+        or not resolved.is_dir()
+        or resolved.is_symlink()
+        or not marker.is_file()
+        or marker.is_symlink()
+    ):
+        raise RuntimeError(f"Refusing cleanup of unowned workspace: {resolved}")
+    if marker.read_text() != f"{token}\n":
+        raise RuntimeError(f"Refusing cleanup with invalid ownership marker: {resolved}")
+    shutil.rmtree(resolved)
+    del _OWNED_WORKSPACES[resolved]
+
+
+@pytest.fixture
+def benchmark_workspace() -> Generator[Path, None, None]:
+    """Provide fresh, checkout-local workspace and guarded cleanup."""
+    workspace = _new_owned_workspace()
+    try:
+        yield workspace
+    finally:
+        _remove_owned_workspace(workspace)
+
 
 def test_benchmark_fit_on_x_uses_explicit_loader(monkeypatch, tmp_path) -> None:
     data = load_diabetes(as_frame=True).frame.head(6).copy()
@@ -864,7 +962,7 @@ def test_benchmark_report_retains_generator_accounting_metadata(
     assert metadata["accounting"] == {"effective_epsilon": 1.25}
 
 
-def test_benchmark_sanity() -> None:
+def test_benchmark_sanity(benchmark_workspace: Path) -> None:
     X, y = load_diabetes(return_X_y=True, as_frame=True)
     X["target"] = y
 
@@ -875,12 +973,13 @@ def test_benchmark_sanity() -> None:
         ],
         GenericDataLoader(X, sensitive_columns=["sex"]),
         metrics={"sanity": ["common_rows_proportion", "data_mismatch_score"]},
+        workspace=benchmark_workspace,
     )
 
     Benchmarks.print(scores)
 
 
-def test_benchmark_augmentation() -> None:
+def test_benchmark_augmentation(benchmark_workspace: Path) -> None:
     X, y = load_diabetes(return_X_y=True, as_frame=True)
     X["target"] = y
 
@@ -897,6 +996,7 @@ def test_benchmark_augmentation() -> None:
                 "xgb_augmentation",
             ]
         },
+        workspace=benchmark_workspace,
     )
 
     Benchmarks.print(scores)
@@ -933,7 +1033,7 @@ def test_augment_data_extends_group_ids_for_generated_rows() -> None:
     assert augmented.group_ids[-1].startswith("__synthcity_generated__augmented__")
 
 
-def test_benchmark_invalid_plugin() -> None:
+def test_benchmark_invalid_plugin(benchmark_workspace: Path) -> None:
     X, y = load_diabetes(return_X_y=True, as_frame=True)
     X["target"] = y
 
@@ -945,10 +1045,11 @@ def test_benchmark_invalid_plugin() -> None:
             ],
             GenericDataLoader(X, sensitive_columns=["sex"]),
             metrics={"sanity": ["common_rows_proportion", "data_mismatch_score"]},
+            workspace=benchmark_workspace,
         )
 
 
-def test_benchmark_invalid_metric() -> None:
+def test_benchmark_invalid_metric(benchmark_workspace: Path) -> None:
     X, y = load_diabetes(return_X_y=True, as_frame=True)
     X["target"] = y
 
@@ -958,11 +1059,12 @@ def test_benchmark_invalid_metric() -> None:
         ],
         GenericDataLoader(X, sensitive_columns=["sex"]),
         metrics={"sanity": ["invalid"]},
+        workspace=benchmark_workspace,
     )
     assert len(score["test2"]) == 0
 
 
-def test_benchmark_custom_target() -> None:
+def test_benchmark_custom_target(benchmark_workspace: Path) -> None:
     X, y = load_diabetes(return_X_y=True, as_frame=True)
     X["target"] = y
 
@@ -977,10 +1079,11 @@ def test_benchmark_custom_target() -> None:
             ]
         },
         task_type="regression",
+        workspace=benchmark_workspace,
     )
 
 
-def test_benchmark_survival_analysis() -> None:
+def test_benchmark_survival_analysis(benchmark_workspace: Path) -> None:
     df = load_rossi()
 
     with pytest.raises(ValueError):
@@ -997,6 +1100,7 @@ def test_benchmark_survival_analysis() -> None:
                     "linear_model",
                 ]
             },
+            workspace=benchmark_workspace,
         )
 
     with pytest.raises(ValueError):
@@ -1016,6 +1120,7 @@ def test_benchmark_survival_analysis() -> None:
                     "linear_model",
                 ]
             },
+            workspace=benchmark_workspace,
         )
 
     with pytest.raises(ValueError):
@@ -1035,6 +1140,7 @@ def test_benchmark_survival_analysis() -> None:
                     "linear_model",
                 ]
             },
+            workspace=benchmark_workspace,
         )
 
     score = Benchmarks.evaluate(
@@ -1050,6 +1156,7 @@ def test_benchmark_survival_analysis() -> None:
                 "linear_model",
             ]
         },
+        workspace=benchmark_workspace,
     )
     Benchmarks.print(score)
 
@@ -1072,18 +1179,15 @@ def test_benchmark_survival_analysis() -> None:
                 "linear_model_augmentation",
             ]
         },
+        workspace=benchmark_workspace,
     )
     Benchmarks.print(score)
 
 
-def test_benchmark_workspace_cache() -> None:
+def test_benchmark_workspace_cache(benchmark_workspace: Path) -> None:
     df = load_rossi()
 
-    workspace = Path("workspace_test")
-    try:
-        workspace.unlink()
-    except BaseException:
-        pass
+    workspace = benchmark_workspace
 
     X = SurvivalAnalysisDataLoader(
         df,
@@ -1095,7 +1199,7 @@ def test_benchmark_workspace_cache() -> None:
 
     testcase = "test1"
     plugin = "uniform_sampler"
-    kwargs = {"workspace": Path("workspace_test")}
+    kwargs = {"workspace": workspace}
 
     kwargs_hash = ""
     if len(kwargs) > 0:
@@ -1163,7 +1267,7 @@ def test_benchmark_workspace_cache() -> None:
         assert augment_generator_file.exists()
 
 
-def test_benchmark_added_plugin() -> None:
+def test_benchmark_added_plugin(benchmark_workspace: Path) -> None:
     X, y = load_iris(return_X_y=True, as_frame=True)
     X["target"] = y
 
@@ -1211,5 +1315,6 @@ def test_benchmark_added_plugin() -> None:
                 "linear_model",
             ]
         },
+        workspace=benchmark_workspace,
     )
     assert "copy_data" in score

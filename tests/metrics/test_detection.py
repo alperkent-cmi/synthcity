@@ -1,5 +1,6 @@
 # stdlib
 import sys
+from pathlib import Path
 from typing import Type
 
 # third party
@@ -24,7 +25,13 @@ from synthcity.plugins.core.dataloader import (
     ImageDataLoader,
     TimeSeriesDataLoader,
 )
+from synthcity.utils.datasets.time_series import google_stocks as google_stocks_dataset
 from synthcity.utils.datasets.time_series.google_stocks import GoogleStocksDataloader
+
+
+@pytest.fixture(autouse=True)
+def _redirect_dataset_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(google_stocks_dataset, "df_path", tmp_path / "goog.csv")
 
 
 @pytest.mark.parametrize("reduction", ["mean", "max", "min"])
@@ -413,9 +420,9 @@ def test_detect_synth_timeseries(test_plugin: Plugin, evaluator_t: Type) -> None
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux only for faster results")
 @pytest.mark.slow_1
 @pytest.mark.slow
-def test_image_support_detection() -> None:
+def test_image_support_detection(tmp_path: Path) -> None:
 
-    dataset = datasets.MNIST(".", download=True)
+    dataset = datasets.MNIST(tmp_path, download=True)
 
     X1 = ImageDataLoader(dataset).sample(100)
     X2 = ImageDataLoader(dataset).sample(100)

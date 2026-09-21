@@ -9,8 +9,14 @@ import pytest
 from synthcity.plugins.core.dataloader import TimeSeriesDataLoader
 from synthcity.plugins.core.models.ts_tabular_vae import TimeSeriesTabularVAE
 from synthcity.plugins.core.schema import Schema
+from synthcity.utils.datasets.time_series import google_stocks as google_stocks_dataset
 from synthcity.utils.datasets.time_series.google_stocks import GoogleStocksDataloader
 from synthcity.utils.datasets.time_series.sine import SineDataloader
+
+
+@pytest.fixture(autouse=True)
+def _redirect_dataset_cache(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(google_stocks_dataset, "df_path", tmp_path / "goog.csv")
 
 
 def test_network_config() -> None:

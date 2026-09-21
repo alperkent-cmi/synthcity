@@ -7,7 +7,13 @@ from sklearn.metrics import mean_squared_error
 from synthcity.plugins.core.models.time_to_event.tte_survival_time_series import (
     TSSurvivalFunctionTimeToEvent,
 )
+from synthcity.utils.datasets.time_series import pbc as pbc_dataset
 from synthcity.utils.datasets.time_series.pbc import PBCDataloader
+
+
+@pytest.fixture(autouse=True)
+def _redirect_dataset_cache(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pbc_dataset, "df_path", tmp_path / "pbc2.csv")
 
 
 def test_sanity() -> None:

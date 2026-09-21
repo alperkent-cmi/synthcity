@@ -11,7 +11,13 @@ from synthcity.plugins.core.models.time_series_survival.ts_surv_dynamic_deephit 
     DynamicDeephitTimeSeriesSurvival,
     rnn_modes,
 )
+from synthcity.utils.datasets.time_series import pbc as pbc_dataset
 from synthcity.utils.datasets.time_series.pbc import PBCDataloader
+
+
+@pytest.fixture(autouse=True)
+def _redirect_dataset_cache(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pbc_dataset, "df_path", tmp_path / "pbc2.csv")
 
 
 def test_sanity() -> None:

@@ -1,6 +1,7 @@
 # stdlib
 import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 # third party
@@ -24,9 +25,17 @@ from synthcity.plugins.core.dataloader import (
 )
 from synthcity.plugins.core.constraints import Constraints
 from synthcity.plugins.core.dataset import FlexibleDataset, TensorDataset
+from synthcity.utils.datasets.time_series import google_stocks as google_stocks_dataset
+from synthcity.utils.datasets.time_series import pbc as pbc_dataset
 from synthcity.utils.datasets.time_series.google_stocks import GoogleStocksDataloader
 from synthcity.utils.datasets.time_series.pbc import PBCDataloader
 from synthcity.utils.datasets.time_series.sine import SineDataloader
+
+
+@pytest.fixture(autouse=True)
+def _redirect_dataset_cache(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(google_stocks_dataset, "df_path", tmp_path / "goog.csv")
+    monkeypatch.setattr(pbc_dataset, "df_path", tmp_path / "pbc2.csv")
 
 
 def test_generic_dataloader_sanity() -> None:
@@ -867,8 +876,8 @@ def test_time_series_survival_pack_unpack_padding(as_numpy: bool) -> None:
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux only for faster results")
 @pytest.mark.parametrize("height", [55, 64])
 @pytest.mark.parametrize("width", [32, 22])
-def test_image_dataloader_sanity(height: int, width: int) -> None:
-    dataset = datasets.MNIST(".", download=True)
+def test_image_dataloader_sanity(height: int, width: int, tmp_path: Path) -> None:
+    dataset = datasets.MNIST(tmp_path, download=True)
 
     loader = ImageDataLoader(
         data=dataset,
@@ -908,8 +917,8 @@ def test_image_dataloader_sanity(height: int, width: int) -> None:
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux only for faster results")
-def test_image_dataloader_create_from_info() -> None:
-    dataset = datasets.MNIST(".", download=True)
+def test_image_dataloader_create_from_info(tmp_path: Path) -> None:
+    dataset = datasets.MNIST(tmp_path, download=True)
 
     loader = ImageDataLoader(
         data=dataset,

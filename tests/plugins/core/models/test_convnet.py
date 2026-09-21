@@ -1,4 +1,6 @@
 # third party
+from pathlib import Path
+
 import numpy as np
 import pytest
 import torch
@@ -54,7 +56,7 @@ def test_suggest_clf(n_channels: int, height: int) -> None:
     assert out.shape == (10, classes)
 
 
-def test_train_clf() -> None:
+def test_train_clf(tmp_path: Path) -> None:
     IMG_SIZE = 32
     data_transform = transforms.Compose(
         [
@@ -63,7 +65,7 @@ def test_train_clf() -> None:
             transforms.Normalize(mean=(0.5,), std=(0.5,)),
         ]
     )
-    dataset = datasets.MNIST(".", download=True, transform=data_transform)
+    dataset = datasets.MNIST(tmp_path, download=True, transform=data_transform)
     dataset = Subset(dataset, np.arange(len(dataset))[:100])
 
     classes = 10

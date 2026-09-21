@@ -1,5 +1,6 @@
 # stdlib
 import sys
+from pathlib import Path
 
 # third party
 import numpy as np
@@ -36,8 +37,8 @@ def test_plugin_hyperparams(test_plugin: Plugin) -> None:
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux only for faster results")
-def test_plugin_fit() -> None:
-    dataset = datasets.MNIST(".", download=True)
+def test_plugin_fit(tmp_path: Path) -> None:
+    dataset = datasets.MNIST(tmp_path, download=True)
     test_plugin = plugin(n_iter=5)
 
     X = ImageDataLoader(dataset).sample(100)
@@ -46,8 +47,8 @@ def test_plugin_fit() -> None:
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux only for faster results")
-def test_plugin_generate() -> None:
-    dataset = datasets.MNIST(".", download=True)
+def test_plugin_generate(tmp_path: Path) -> None:
+    dataset = datasets.MNIST(tmp_path, download=True)
     test_plugin = plugin(n_iter=10, n_units_latent=13)
 
     X = ImageDataLoader(dataset).sample(100)
@@ -65,8 +66,8 @@ def test_plugin_generate() -> None:
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux only for faster results")
 @pytest.mark.slow_2
 @pytest.mark.slow
-def test_plugin_generate_with_conditional() -> None:
-    dataset = datasets.MNIST(".", download=True)
+def test_plugin_generate_with_conditional(tmp_path: Path) -> None:
+    dataset = datasets.MNIST(tmp_path, download=True)
     test_plugin = plugin(n_iter=10, n_units_latent=13)
 
     X = ImageDataLoader(dataset).sample(100)
@@ -82,8 +83,8 @@ def test_plugin_generate_with_conditional() -> None:
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux only for faster results")
 @pytest.mark.slow_2
 @pytest.mark.slow
-def test_plugin_generate_with_stop_conditional() -> None:
-    dataset = datasets.MNIST(".", download=True)
+def test_plugin_generate_with_stop_conditional(tmp_path: Path) -> None:
+    dataset = datasets.MNIST(tmp_path, download=True)
     test_plugin = plugin(n_iter=10, n_units_latent=13, n_iter_print=2)
 
     X = ImageDataLoader(dataset).sample(100)

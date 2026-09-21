@@ -23,11 +23,14 @@ data_transform = transforms.Compose(
         transforms.Normalize(mean=(0.5,), std=(0.5,)),
     ]
 )
-# Load MNIST dataset as tensors
 batch_size = 128
-dataset = datasets.MNIST(".", download=True, transform=data_transform)
-dataset = Subset(dataset, np.arange(len(dataset))[:100])
-dataset = FlexibleDataset(dataset)
+
+
+@pytest.fixture
+def image_dataset(tmp_path):
+    dataset = datasets.MNIST(tmp_path, download=True, transform=data_transform)
+    dataset = Subset(dataset, np.arange(len(dataset))[:100])
+    return FlexibleDataset(dataset)
 
 
 def test_network_config() -> None:
@@ -111,7 +114,9 @@ def test_basic_network(
 
 
 @pytest.mark.parametrize("generator_extra_penalties", [[], ["identifiability_penalty"]])
-def test_image_gan_generation(generator_extra_penalties: list) -> None:
+def test_image_gan_generation(
+    generator_extra_penalties: list, image_dataset: FlexibleDataset
+) -> None:
     noise_dim = 123
     (
         image_generator,
@@ -132,16 +137,16 @@ def test_image_gan_generation(generator_extra_penalties: list) -> None:
         generator_n_iter=10,
         generator_extra_penalties=generator_extra_penalties,
     )
-    model.fit(dataset)
+    model.fit(image_dataset)
 
     generated = model.generate(10)
 
     assert generated.shape == (10, 1, IMG_SIZE, IMG_SIZE)
 
 
-def test_image_gan_conditional_generation() -> None:
+def test_image_gan_conditional_generation(image_dataset: FlexibleDataset) -> None:
     noise_dim = 123
-    cond = dataset.labels()
+    cond = image_dataset.labels()
     (
         image_generator,
         image_discriminator,
@@ -161,7 +166,7 @@ def test_image_gan_conditional_generation() -> None:
         n_channels=1,
         generator_n_iter=10,
     )
-    model.fit(dataset, cond=cond)
+    model.fit(image_dataset, cond=cond)
 
     cnt = 10
     generated = model.generate(cnt, cond=torch.ones(cnt).to(DEVICE))

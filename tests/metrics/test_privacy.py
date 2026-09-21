@@ -1,5 +1,6 @@
 # stdlib
 import sys
+from pathlib import Path
 from typing import Type
 
 # third party
@@ -87,8 +88,8 @@ def test_evaluator(evaluator_t: Type, test_plugin: Plugin) -> None:
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux only for faster results")
-def test_image_support() -> None:
-    dataset = datasets.MNIST(".", download=True)
+def test_image_support(tmp_path: Path) -> None:
+    dataset = datasets.MNIST(tmp_path, download=True)
 
     X1 = ImageDataLoader(dataset).sample(100)
     X2 = ImageDataLoader(dataset).sample(100)

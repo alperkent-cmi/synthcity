@@ -7,9 +7,17 @@ import pytest
 
 # synthcity absolute
 from synthcity.plugins.core.models.ts_model import TimeSeriesModel, modes
+from synthcity.utils.datasets.time_series import google_stocks as google_stocks_dataset
+from synthcity.utils.datasets.time_series import pbc as pbc_dataset
 from synthcity.utils.datasets.time_series.google_stocks import GoogleStocksDataloader
 from synthcity.utils.datasets.time_series.pbc import PBCDataloader
 from synthcity.utils.datasets.time_series.sine import SineDataloader
+
+
+@pytest.fixture(autouse=True)
+def _redirect_dataset_cache(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(google_stocks_dataset, "df_path", tmp_path / "goog.csv")
+    monkeypatch.setattr(pbc_dataset, "df_path", tmp_path / "pbc2.csv")
 
 
 @pytest.mark.parametrize("mode", modes)

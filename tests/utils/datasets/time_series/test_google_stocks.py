@@ -1,5 +1,17 @@
+# stdlib
+from pathlib import Path
+
+# third party
+import pytest
+
 # synthcity absolute
+from synthcity.utils.datasets.time_series import google_stocks
 from synthcity.utils.datasets.time_series.google_stocks import GoogleStocksDataloader
+
+
+@pytest.fixture(autouse=True)
+def redirect_dataset_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(google_stocks, "df_path", tmp_path / "goog.csv")
 
 
 def test_dataloader() -> None:

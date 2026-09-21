@@ -12,8 +12,14 @@ from synthcity.plugins.core.models.tabular_encoder import (
     TabularEncoder,
     TimeSeriesTabularEncoder,
 )
+from synthcity.utils.datasets.time_series import google_stocks as google_stocks_dataset
 from synthcity.utils.datasets.time_series.google_stocks import GoogleStocksDataloader
 from synthcity.utils.datasets.time_series.sine import SineDataloader
+
+
+@pytest.fixture(autouse=True)
+def _redirect_dataset_cache(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(google_stocks_dataset, "df_path", tmp_path / "goog.csv")
 
 
 @pytest.mark.parametrize("encoder", [TabularEncoder, TimeSeriesTabularEncoder])

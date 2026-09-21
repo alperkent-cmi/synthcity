@@ -14,9 +14,15 @@ from synthcity.plugins.core.dataloader import (
     SurvivalAnalysisDataLoader,
     TimeSeriesDataLoader,
 )
+from synthcity.utils.datasets.time_series import google_stocks as google_stocks_dataset
 from synthcity.utils.datasets.time_series.google_stocks import GoogleStocksDataloader
 from synthcity.utils.serialization import load, save
 from synthcity.version import MAJOR_VERSION
+
+
+@pytest.fixture(autouse=True)
+def _redirect_dataset_cache(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(google_stocks_dataset, "df_path", tmp_path / "goog.csv")
 
 
 def test_version() -> None:

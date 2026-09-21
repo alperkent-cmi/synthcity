@@ -1,8 +1,17 @@
+# stdlib
+from pathlib import Path
+
 # third party
 import pytest
 
 # synthcity absolute
+from synthcity.utils.datasets.time_series import pbc
 from synthcity.utils.datasets.time_series.pbc import PBCDataloader
+
+
+@pytest.fixture(autouse=True)
+def redirect_dataset_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(pbc, "df_path", tmp_path / "pbc2.csv")
 
 
 @pytest.mark.parametrize("as_numpy", [True, False])
