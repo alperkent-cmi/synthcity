@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 # Necessary packages
-from pydantic import validate_arguments
+from pydantic import validate_call
 from torch.utils.data import sampler
 
 # synthcity absolute
@@ -102,7 +102,7 @@ class CTGANPlugin(Plugin):
 
     """
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         n_iter: int = 2000,

@@ -4,7 +4,7 @@ from typing import Any, List, Optional
 # third party
 import numpy as np
 import pandas as pd
-from pydantic import validate_arguments
+from pydantic import validate_call
 from xgboost import XGBRegressor
 
 # synthcity absolute
@@ -32,7 +32,7 @@ class SurvivalFunctionTimeToEvent(TimeToEventPlugin):
         self.target_column = "target_column"
         self.tte_column = "tte_column"
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def fit(
         self,
         X: pd.DataFrame,
@@ -68,12 +68,12 @@ class SurvivalFunctionTimeToEvent(TimeToEventPlugin):
 
         return self
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def predict(self, X: pd.DataFrame) -> pd.Series:
         "Predict time-to-event"
         return self.predict_any(X, pd.Series([1] * len(X), index=X.index))
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def predict_any(self, X: pd.DataFrame, E: pd.Series) -> pd.Series:
         "Predict time-to-event or censoring"
 

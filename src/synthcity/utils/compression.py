@@ -3,7 +3,7 @@ from typing import Any, Dict, List
 
 # third party
 import pandas as pd
-from pydantic import validate_arguments
+from pydantic import validate_call
 from sklearn.preprocessing import LabelEncoder
 from xgboost import XGBClassifier, XGBRegressor
 
@@ -11,7 +11,7 @@ from xgboost import XGBClassifier, XGBRegressor
 from .evaluation import evaluate_classifier, evaluate_regression
 
 
-@validate_arguments(config=dict(arbitrary_types_allowed=True))
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def compress_dataset(
     df: pd.DataFrame,
     cat_limit: int = 10,
@@ -129,7 +129,7 @@ def compress_dataset(
     return df, context
 
 
-@validate_arguments(config=dict(arbitrary_types_allowed=True))
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def decompress_dataset(
     df: pd.DataFrame, context: Dict, cat_limit: int = 10
 ) -> pd.DataFrame:

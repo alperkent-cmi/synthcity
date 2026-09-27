@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 from pgmpy.factors.discrete.CPD import TabularCPD
 from pgmpy.sampling import BayesianModelSampling
-from pydantic import validate_arguments
+from pydantic import validate_call
 from scipy.optimize import fsolve
 from sklearn.cluster import KMeans
 from sklearn.metrics import normalized_mutual_info_score
@@ -79,7 +79,7 @@ class PrivBayes(Serializable):
     Finally, PrivBayes samples tuples from the approximate distribution to construct a synthetic dataset, and then releases the synthetic data.
     """
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         epsilon: float = 1.0,
@@ -100,7 +100,7 @@ class PrivBayes(Serializable):
         self.default_k = 3
         self.mi_cache: dict = {}
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def fit(self, data: pd.DataFrame) -> Any:
         self.n_columns = len(data.columns)
         self.n_records_fit = len(data)
@@ -140,7 +140,7 @@ class PrivBayes(Serializable):
         log.info("[PrivBayes] done training")
         return self
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def sample(self, count: int) -> pd.DataFrame:
         log.debug(f"[PrivBayes] sample {count} examples")
         samples = self.model.forward_sample(size=count, show_progress=True)
@@ -190,7 +190,7 @@ class PrivBayes(Serializable):
 
         return data
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _greedy_bayes(self, data: pd.DataFrame) -> List:
         """Construct a Bayesian Network (BN) using greedy algorithm."""
         # prepare K
@@ -341,7 +341,7 @@ class PrivBayes(Serializable):
             raise RuntimeError(f"Invalid output shape {output.shape}")
         return output
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _compute_noisy_conditional_distributions(
         self, data: pd.DataFrame
     ) -> np.ndarray:
@@ -428,7 +428,7 @@ class PrivBayes(Serializable):
         num_attributes = len(data.columns)
         return (num_attributes - 1) * sensitivity / self.epsilon
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _evaluate_parent_mutual_information(
         self,
         data: pd.DataFrame,
@@ -464,7 +464,7 @@ class PrivBayes(Serializable):
 
         return parents_pair_list, mutual_info_list
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def mutual_info_score(
         self, data: pd.DataFrame, parents: List[str], candidate: str
     ) -> float:
@@ -482,7 +482,7 @@ class PrivBayes(Serializable):
 
         return normalized_mutual_info_score(src_bins, target_bins)
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _exponential_mechanism(
         self,
         data: pd.DataFrame,

@@ -5,7 +5,7 @@ from typing import Any, List
 import numpy as np
 import pandas as pd
 from lifelines import WeibullAFTFitter
-from pydantic import validate_arguments
+from pydantic import validate_call
 
 # synthcity absolute
 from synthcity.plugins.core.distribution import Distribution, FloatDistribution
@@ -20,7 +20,7 @@ class WeibullAFTSurvivalAnalysis(SurvivalAnalysisPlugin):
         super().__init__()
         self.model = WeibullAFTFitter(**kwargs)
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def fit(
         self, X: pd.DataFrame, T: pd.Series, Y: pd.Series, groups: Any = None
     ) -> "SurvivalAnalysisPlugin":
@@ -34,7 +34,7 @@ class WeibullAFTSurvivalAnalysis(SurvivalAnalysisPlugin):
 
         return self
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def predict(self, X: pd.DataFrame, time_horizons: List) -> pd.DataFrame:
         "Predict time-to-event"
         chunks = int(len(X) / 1024) + 1

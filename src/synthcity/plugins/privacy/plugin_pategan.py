@@ -15,7 +15,7 @@ import pandas as pd
 import torch
 
 # Necessary packages
-from pydantic import validate_arguments
+from pydantic import validate_call
 from sklearn.linear_model import LogisticRegression
 from xgboost import XGBClassifier
 
@@ -61,7 +61,7 @@ _PATE_ACCOUNTING_REQUIRED_FIELDS = frozenset(
 
 
 class Teachers(Serializable):
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         n_teachers: int,
@@ -89,7 +89,7 @@ class Teachers(Serializable):
                 "max_iter": 10000,
             }
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def fit(self, X: np.ndarray, generator: Any, groups: Any = None) -> Any:
         # 1. train teacher models
         self.teacher_models: list = []
@@ -158,7 +158,7 @@ class Teachers(Serializable):
 
         return self
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def pate_lamda(self, x: np.ndarray) -> Tuple[int, int, int]:
         """Returns PATE_lambda(x).
 
@@ -192,7 +192,7 @@ class Teachers(Serializable):
 class PATEGAN(Serializable):
     """Basic PATE-GAN framework."""
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         # GAN
@@ -282,7 +282,7 @@ class PATEGAN(Serializable):
             "stopping_state": "not_fitted",
         }
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def fit(
         self,
         X_train: pd.DataFrame,
@@ -441,13 +441,13 @@ class PATEGAN(Serializable):
             )
         return metadata
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _update_moments_accountant(self, n0: np.ndarray, n1: np.ndarray) -> np.ndarray:
         # Update moments accountant
         qbase = self.lamda * np.abs(n0 - n1)
         return (2 + qbase) / (4 * np.exp(qbase))
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _update_alpha(self, n0: np.ndarray, n1: np.ndarray) -> Dict:
         # Update moments accountant
         q = self._update_moments_accountant(n0, n1)
@@ -459,7 +459,7 @@ class PATEGAN(Serializable):
             self.alpha_dict[lidx] += np.clip(t, a_min=0, a_max=upper).sum()
         return self.alpha_dict
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def sample(self, count: int) -> np.ndarray:
         samples = self.model(count)
         return self.model.decode(pd.DataFrame(samples))
@@ -536,7 +536,7 @@ class PATEGANPlugin(Plugin):
 
     """
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         # GAN

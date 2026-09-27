@@ -11,7 +11,7 @@ import numpy.ma as ma
 import pandas as pd
 import PIL
 import torch
-from pydantic import validate_arguments
+from pydantic import validate_call
 from sklearn.model_selection import (
     GroupShuffleSplit,
     train_test_split,
@@ -424,7 +424,7 @@ class GenericDataLoader(DataLoader):
 
     supports_group_ids = True
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         data: Union[pd.DataFrame, list, np.ndarray],
@@ -727,7 +727,7 @@ class SurvivalAnalysisDataLoader(DataLoader):
 
     supports_group_ids = True
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         data: pd.DataFrame,
@@ -978,7 +978,7 @@ class TimeSeriesDataLoader(DataLoader):
 
     supports_group_ids = True
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         temporal_data: List[pd.DataFrame],
@@ -1326,7 +1326,7 @@ class TimeSeriesDataLoader(DataLoader):
 
     # Padding helpers
     @staticmethod
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def pad_raw_features(
         static_data: Optional[pd.DataFrame],
         temporal_data: List[pd.DataFrame],
@@ -1352,7 +1352,7 @@ class TimeSeriesDataLoader(DataLoader):
         return static_data, temporal_data, observation_times, outcome
 
     @staticmethod
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def pad_raw_data(
         static_data: Optional[pd.DataFrame],
         temporal_data: List[pd.DataFrame],
@@ -1428,7 +1428,7 @@ class TimeSeriesDataLoader(DataLoader):
         return temporal_features, mask_features
 
     @staticmethod
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def mask_temporal_data(
         temporal_data: List[pd.DataFrame],
         observation_times: List,
@@ -1457,7 +1457,7 @@ class TimeSeriesDataLoader(DataLoader):
         return temporal_data, observation_times
 
     @staticmethod
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def unmask_temporal_data(
         temporal_data: List[pd.DataFrame],
         observation_times: List,
@@ -1495,7 +1495,7 @@ class TimeSeriesDataLoader(DataLoader):
         return temporal_data, observation_times_unmasked
 
     @staticmethod
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def pad_and_mask(
         static_data: Optional[pd.DataFrame],
         temporal_data: List[pd.DataFrame],
@@ -1601,7 +1601,7 @@ class TimeSeriesDataLoader(DataLoader):
         return seq_df, info
 
     @staticmethod
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def pack_raw_data(
         static_data: Optional[pd.DataFrame],
         temporal_data: List[pd.DataFrame],
@@ -1629,7 +1629,7 @@ class TimeSeriesDataLoader(DataLoader):
         return static_data, temporal_data, observation_times, outcome, seq_df, info
 
     @staticmethod
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def unpack_raw_data(
         data: pd.DataFrame,
         info: dict,
@@ -1712,7 +1712,7 @@ class TimeSeriesSurvivalDataLoader(TimeSeriesDataLoader):
 
     """
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         temporal_data: List[pd.DataFrame],
@@ -1942,7 +1942,7 @@ class ImageDataLoader(DataLoader):
 
     supports_group_ids = True
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         data: Union[torch.utils.data.Dataset, Tuple[torch.Tensor, torch.Tensor]],
@@ -2157,7 +2157,7 @@ class Syn_SeqDataLoader(DataLoader):
       - Delegating fairness and constraint checks to external classes.
     """
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         data: pd.DataFrame,
@@ -2371,7 +2371,7 @@ class Syn_SeqDataLoader(DataLoader):
         return new_loader
 
 
-@validate_arguments(config=dict(arbitrary_types_allowed=True))
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def create_from_info(
     data: Union[pd.DataFrame, torch.utils.data.Dataset], info: dict
 ) -> "DataLoader":

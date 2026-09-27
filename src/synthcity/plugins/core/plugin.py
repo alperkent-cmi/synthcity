@@ -9,7 +9,7 @@ from typing import Any, Callable, Dict, Generator, List, Optional, Type, Union
 
 # third party
 import pandas as pd
-from pydantic import ConfigDict, validate_arguments
+from pydantic import ConfigDict, validate_call
 
 # synthcity absolute
 import synthcity.logger as log
@@ -170,7 +170,7 @@ class Plugin(Serializable, metaclass=ABCMeta):
         """The Fully-Qualified name of the plugin."""
         return cls.type() + "." + cls.name()
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def fit(self, X: Union[DataLoader, pd.DataFrame], *args: Any, **kwargs: Any) -> Any:
         """Training method the synthetic data plugin.
 
@@ -272,7 +272,7 @@ class Plugin(Serializable, metaclass=ABCMeta):
         """
         ...
 
-    @validate_arguments
+    @validate_call
     def generate(
         self,
         count: Optional[int] = None,
@@ -418,7 +418,7 @@ class Plugin(Serializable, metaclass=ABCMeta):
         ]
         return data_info
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _safe_generate(
         self, gen_cbk: Callable, count: int, syn_schema: Schema, **kwargs: Any
     ) -> DataLoader:
@@ -454,7 +454,7 @@ class Plugin(Serializable, metaclass=ABCMeta):
 
         return create_from_info(data_synth, self._generated_data_info(len(data_synth)))
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _safe_generate_time_series(
         self, gen_cbk: Callable, count: int, syn_schema: Schema, **kwargs: Any
     ) -> DataLoader:
@@ -518,7 +518,7 @@ class Plugin(Serializable, metaclass=ABCMeta):
             self._generated_data_info(offset),
         )
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _safe_generate_images(
         self, gen_cbk: Callable, count: int, syn_schema: Schema, **kwargs: Any
     ) -> DataLoader:
@@ -529,7 +529,7 @@ class Plugin(Serializable, metaclass=ABCMeta):
             self._generated_data_info(len(data_synth)),
         )
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def schema_includes(self, other: Union[DataLoader, pd.DataFrame]) -> bool:
         """Helper method to test if the reference schema includes a Dataset
 
@@ -558,7 +558,7 @@ class Plugin(Serializable, metaclass=ABCMeta):
 
         return self._training_schema
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def plot(
         self,
         plt: Any,
@@ -594,7 +594,7 @@ class PluginLoader:
     Used to load the plugins from the current folder.
     """
 
-    @validate_arguments
+    @validate_call
     def __init__(self, plugins: list, expected_type: Type, categories: list) -> None:
         global PLUGIN_CATEGORY_REGISTRY
         PLUGIN_CATEGORY_REGISTRY = {cat: [] for cat in categories}
@@ -613,7 +613,7 @@ class PluginLoader:
         self._plugins: Dict[str, Type[Plugin]] = PLUGIN_REGISTRY
         self._categories: Dict[str, List[str]] = PLUGIN_CATEGORY_REGISTRY
 
-    @validate_arguments
+    @validate_call
     def _load_single_plugin_impl(self, plugin_name: str) -> Optional[Type]:
         """Helper for loading a single plugin implementation"""
         plugin = Path(plugin_name)
@@ -656,7 +656,7 @@ class PluginLoader:
 
         return cls
 
-    @validate_arguments
+    @validate_call
     def _load_single_plugin(self, plugin_name: str) -> bool:
         """Helper for loading a single plugin"""
         cls = self._load_single_plugin_impl(plugin_name)
@@ -718,12 +718,12 @@ class PluginLoader:
         PLUGIN_REGISTRY[name] = cls
         return self
 
-    @validate_arguments
+    @validate_call
     def load(self, buff: bytes) -> Any:
         """Load serialized plugin"""
         return Plugin.load(buff)
 
-    @validate_arguments
+    @validate_call
     def get(self, name: str, *args: Any, **kwargs: Any) -> Any:
         """Create a new object from a plugin.
         Args:
@@ -745,7 +745,7 @@ class PluginLoader:
 
         return self._plugins[name](*args, **kwargs)
 
-    @validate_arguments
+    @validate_call
     def get_type(self, name: str) -> Type:
         """Get the class type of a plugin.
         Args:
@@ -776,7 +776,7 @@ class PluginLoader:
         """The number of available plugins."""
         return len(self.list())
 
-    @validate_arguments
+    @validate_call
     def __getitem__(self, key: str) -> Any:
         return self.get(key)
 

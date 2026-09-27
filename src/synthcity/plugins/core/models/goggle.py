@@ -8,7 +8,7 @@ import dgl
 import numpy as np
 import torch
 from dgl.nn import GraphConv, SAGEConv
-from pydantic import validate_arguments
+from pydantic import validate_call
 from torch import nn
 from torch.utils.data import DataLoader as TorchDataLoader
 from torch.utils.data import TensorDataset
@@ -30,7 +30,7 @@ from .RGCNConv import RGCNConv
 
 
 class Goggle(nn.Module):
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         input_dim: int,
@@ -249,7 +249,7 @@ class Goggle(nn.Module):
 
             return eval_loss, rec_loss, kld_loss, graph_loss
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def generate(
         self,
         count: int,
@@ -359,7 +359,7 @@ class Encoder(nn.Module):
 
 
 class GraphDecoderHomo(nn.Module):
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         decoder_dim: int,
@@ -444,7 +444,7 @@ class GraphDecoderHomo(nn.Module):
 
 
 class GraphDecoderHet(nn.Module):
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         decoder_dim: int,
@@ -521,7 +521,7 @@ class GraphDecoderHet(nn.Module):
 
 
 class GraphInputProcessorHomo(nn.Module):
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         input_dim: int,
@@ -582,7 +582,7 @@ class GraphInputProcessorHomo(nn.Module):
 
 
 class GraphInputProcessorHet(nn.Module):
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         input_dim: int,
@@ -655,7 +655,7 @@ class GraphInputProcessorHet(nn.Module):
 
 
 class LearnedGraph(nn.Module):
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         input_dim: int,
@@ -708,7 +708,7 @@ class LearnedGraph(nn.Module):
 
 
 class GoggleLoss(nn.Module):
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         alpha: float = 1.0,

@@ -43,6 +43,17 @@
 
 *Please note: synthcity does not handle missing data and so these values must be imputed first [HyperImpute](https://github.com/vanderschaarlab/hyperimpute) can be used to do this.*
 
+## Fork maintenance notes
+
+- Replace deprecated Pydantic `validate_arguments` with `validate_call` to
+  retain argument validation using the supported Pydantic 2 API.
+- Build `ScoreEvaluator.to_dataframe` from batched rows instead of repeatedly
+  concatenating empty/all-NA frames, avoiding pandas warnings while preserving
+  the output schema and dtypes.
+
+These are fork-only compatibility and warning fixes; no linked upstream issue
+or pull request is known.
+
 ## :rocket: Installation
 
 The library can be installed from PyPI using

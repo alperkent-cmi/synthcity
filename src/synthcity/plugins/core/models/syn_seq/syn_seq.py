@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # third party
 import numpy as np
 import pandas as pd
-from pydantic import validate_arguments
+from pydantic import validate_call
 
 # synthcity absolute
 from synthcity.plugins.core.models.syn_seq.methods import (
@@ -59,7 +59,7 @@ class Syn_Seq:
     by sampling from the fitted models.
     """
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(self, random_state: int = 0, sampling_patience: int = 100) -> None:
         """
         Args:

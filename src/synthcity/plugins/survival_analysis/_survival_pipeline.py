@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 # Necessary packages
-from pydantic import validate_arguments
+from pydantic import validate_call
 from xgboost import XGBClassifier
 
 # synthcity absolute
@@ -52,7 +52,7 @@ class SurvivalPipeline(Plugin):
             Max inference iterations to wait for the generated data to match the training schema.
     """
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         method: str = "adsgan",

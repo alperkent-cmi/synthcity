@@ -4,7 +4,7 @@ from typing import Any, List, Optional, Union
 # third party
 import numpy as np
 import pandas as pd
-from pydantic import validate_arguments
+from pydantic import validate_call
 
 # synthcity absolute
 from synthcity.plugins.core.distribution import CategoricalDistribution, Distribution
@@ -66,7 +66,7 @@ class TSSurvivalFunctionTimeToEvent(TimeToEventPlugin):
             "device": device,
         }
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def fit(
         self,
         static: Optional[np.ndarray],
@@ -105,7 +105,7 @@ class TSSurvivalFunctionTimeToEvent(TimeToEventPlugin):
 
         return self
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def predict(
         self,
         static: Optional[np.ndarray],
@@ -117,7 +117,7 @@ class TSSurvivalFunctionTimeToEvent(TimeToEventPlugin):
             static, temporal, observation_times, np.ones(len(temporal))
         )
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def predict_any(
         self,
         static: Optional[np.ndarray],

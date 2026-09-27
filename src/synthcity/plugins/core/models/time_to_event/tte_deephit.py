@@ -7,7 +7,7 @@ import pandas as pd
 import torch
 import torchtuples as tt
 from pycox.models import DeepHitSingle
-from pydantic import validate_arguments
+from pydantic import validate_call
 
 try:
     # third party
@@ -64,7 +64,7 @@ class DeephitTimeToEvent(TimeToEventPlugin):
         self.dropout = dropout
         self.batch_norm = batch_norm
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def fit(
         self,
         X: pd.DataFrame,
@@ -133,7 +133,7 @@ class DeephitTimeToEvent(TimeToEventPlugin):
 
         return self
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def predict(self, X: pd.DataFrame) -> pd.Series:
         "Predict time-to-event"
         self.model.net.eval()
@@ -144,7 +144,7 @@ class DeephitTimeToEvent(TimeToEventPlugin):
 
         return pd.Series(trapz(surv_f.T.values, surv_f.index.values), index=X.index)
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def predict_any(self, X: pd.DataFrame, E: pd.Series) -> pd.Series:
         "Predict time-to-event"
 

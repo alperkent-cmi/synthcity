@@ -8,7 +8,7 @@ from typing import Any, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import torch
-from pydantic import validate_arguments
+from pydantic import validate_call
 from sklearn.preprocessing import MinMaxScaler
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
@@ -35,7 +35,7 @@ from ._base import TimeToEventPlugin, _train_validation_indices
 
 
 class TimeEventNN(nn.Module):
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         n_features: int,
@@ -126,7 +126,7 @@ class TimeEventNN(nn.Module):
         with torch.no_grad():
             return self(X).cpu().numpy()
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         return self.generator(X)
 
@@ -414,7 +414,7 @@ class TENNTimeToEvent(TimeToEventPlugin):
 
         self.kwargs = kwargs
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def fit(
         self,
         X: pd.DataFrame,
@@ -440,7 +440,7 @@ class TENNTimeToEvent(TimeToEventPlugin):
 
         return self
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def predict(self, X: pd.DataFrame) -> pd.Series:
         "Predict time-to-event"
 
@@ -453,7 +453,7 @@ class TENNTimeToEvent(TimeToEventPlugin):
 
         return pd.Series(nn_time_to_event, index=X.index)
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def predict_any(self, X: pd.DataFrame, E: pd.Series) -> pd.Series:
         "Predict time-to-event"
 

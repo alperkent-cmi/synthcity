@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.utils.data
-from pydantic import validate_arguments
+from pydantic import validate_call
 from sklearn.model_selection import train_test_split
 
 # synthcity absolute
@@ -23,11 +23,11 @@ class BaseSampler(torch.utils.data.sampler.Sampler):
     def get_dataset_conditionals(self) -> np.ndarray:
         return None
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def sample_conditional(self, batch: int, **kwargs: Any) -> Optional[Tuple]:
         return None
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def sample_conditional_for_class(self, batch: int, c: int) -> Optional[np.ndarray]:
         return None
 
@@ -46,7 +46,7 @@ class BaseSampler(torch.utils.data.sampler.Sampler):
 class ImbalancedDatasetSampler(BaseSampler):
     """Samples elements randomly from a given list of indices for imbalanced dataset"""
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(self, labels: List, train_size: float = 0.8) -> None:
         # if indices is not provided, all elements in the dataset will be considered
         indices = list(range(len(labels)))
@@ -93,7 +93,7 @@ class ConditionalDatasetSampler(BaseSampler):
 
     supports_group_ids = True
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         data: pd.DataFrame,
@@ -142,7 +142,7 @@ class ConditionalDatasetSampler(BaseSampler):
     def get_dataset_conditionals(self) -> np.ndarray:
         return self._dataset_conditional
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def sample_conditional(
         self, batch: int, with_ids: bool = False, p: Optional[np.ndarray] = None
     ) -> Any:
@@ -189,14 +189,14 @@ class ConditionalDatasetSampler(BaseSampler):
 
         return cond
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def sample_conditional_for_class(self, batch: int, c: int) -> Optional[np.ndarray]:
         cond = np.zeros((batch, self._n_conditional_dimension)).astype(float)
         cond[..., c] = 1
 
         return cond
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def sample_conditional_indices(
         self,
         cat_feats: np.ndarray,

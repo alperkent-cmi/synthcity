@@ -3,7 +3,7 @@ from importlib import import_module
 from typing import Any, Union
 
 # third party
-from pydantic import validate_arguments
+from pydantic import validate_call
 from torch import nn
 from tsai.models.InceptionTime import InceptionTime
 from tsai.models.InceptionTimePlus import InceptionTimePlus
@@ -110,7 +110,7 @@ def _dynamic_import(path: str) -> type:
     return getattr(module, name)
 
 
-@validate_arguments(config=dict(arbitrary_types_allowed=True))
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def get_model(block: Union[str, type], params: dict) -> Any:
     """Get a model from a name or a class.
 
@@ -125,13 +125,13 @@ def get_model(block: Union[str, type], params: dict) -> Any:
     return _get(block, params, MODELS)
 
 
-@validate_arguments(config=dict(arbitrary_types_allowed=True))
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def get_nonlin(nonlin: Union[str, nn.Module], params: dict = {}) -> Any:
     """Get a nonlinearity layer from a name or a class."""
     return _get(nonlin, params, ACTIVATIONS)
 
 
-@validate_arguments(config=dict(arbitrary_types_allowed=True))
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def get_feature_encoder(encoder: Union[str, type], params: dict = {}) -> Any:
     """Get a feature encoder from a name or a class.
 

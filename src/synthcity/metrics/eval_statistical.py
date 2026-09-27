@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import torch
 from geomloss import SamplesLoss
-from pydantic import validate_arguments
+from pydantic import validate_call
 from scipy import linalg
 from scipy.spatial.distance import jensenshannon
 from scipy.special import kl_div
@@ -62,7 +62,7 @@ class StatisticalEvaluator(MetricEvaluator):
         ).encode()
         return hashlib.sha256(encoded).hexdigest()[:16]
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def evaluate(self, X_gt: DataLoader, X_syn: DataLoader) -> Dict:
         cache_file = (
             self._workspace
@@ -99,7 +99,7 @@ class StatisticalEvaluator(MetricEvaluator):
             save_to_file(cache_file, results)
         return results
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def evaluate_default(
         self,
         X_gt: DataLoader,
@@ -132,7 +132,7 @@ class InverseKLDivergence(StatisticalEvaluator):
     def direction() -> str:
         return "maximize"
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _evaluate(self, X_gt: DataLoader, X_syn: DataLoader) -> Dict:
         freqs = get_frequency(
             X_gt.dataframe(), X_syn.dataframe(), n_histogram_bins=self._n_histogram_bins
@@ -168,7 +168,7 @@ class KolmogorovSmirnovTest(StatisticalEvaluator):
     def direction() -> str:
         return "maximize"
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _evaluate(self, X_gt: DataLoader, X_syn: DataLoader) -> Dict:
         res = []
         for col in X_gt.columns:
@@ -204,7 +204,7 @@ class ChiSquaredTest(StatisticalEvaluator):
     def direction() -> str:
         return "maximize"
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _evaluate(self, X_gt: DataLoader, X_syn: DataLoader) -> Dict:
         res = []
         freqs = get_frequency(
@@ -241,7 +241,7 @@ class MaximumMeanDiscrepancy(StatisticalEvaluator):
         1: The distributions are totally different.
     """
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(self, kernel: str = "rbf", **kwargs: Any) -> None:
         super().__init__(default_metric="joint", **kwargs)
 
@@ -255,7 +255,7 @@ class MaximumMeanDiscrepancy(StatisticalEvaluator):
     def direction() -> str:
         return "minimize"
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _evaluate(
         self,
         X_gt: DataLoader,
@@ -337,7 +337,7 @@ class JensenShannonDistance(StatisticalEvaluator):
 
     output_version = "jsd_v2"
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         normalize: bool = True,
@@ -494,7 +494,7 @@ class JensenShannonDistance(StatisticalEvaluator):
     def result_metadata(self) -> Dict[str, Any]:
         return dict(self._result_metadata)
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _evaluate_stats(
         self,
         X_gt: DataLoader,
@@ -591,7 +591,7 @@ class JensenShannonDistance(StatisticalEvaluator):
 
         return stats_, stats_gt, stats_syn
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _evaluate(
         self,
         X_gt: DataLoader,
@@ -949,7 +949,7 @@ class WassersteinDistance(StatisticalEvaluator):
     def direction() -> str:
         return "minimize"
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _evaluate(
         self,
         X: DataLoader,
@@ -1000,7 +1000,7 @@ class PRDCScore(StatisticalEvaluator):
     def direction() -> str:
         return "maximize"
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _evaluate(
         self,
         X: DataLoader,
@@ -1142,7 +1142,7 @@ class AlphaPrecision(StatisticalEvaluator):
     def direction() -> str:
         return "maximize"
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def metrics(
         self,
         X: np.ndarray,
@@ -1281,7 +1281,7 @@ class AlphaPrecision(StatisticalEvaluator):
 
         return (X_gt_norm_df, X_syn_norm_df)
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _evaluate(
         self,
         X: DataLoader,
@@ -1347,7 +1347,7 @@ class SurvivalKMDistance(StatisticalEvaluator):
     def direction() -> str:
         return "minimize"
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _evaluate(
         self,
         X: DataLoader,
@@ -1475,7 +1475,7 @@ class FrechetInceptionDistance(StatisticalEvaluator):
 
         return diff.dot(diff) + np.trace(sigma1) + np.trace(sigma2) - 2 * tr_covmean
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _evaluate(
         self,
         X: DataLoader,

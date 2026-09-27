@@ -226,7 +226,7 @@ class ScoreEvaluator:
             "durations",
             "direction",
         ]
-        output = pd.DataFrame([], columns=output_metrics)
+        output_rows = []
         for metric in self.scores:
             errors = self.scores[metric]["errors"]
             direction = self.scores[metric]["direction"]
@@ -241,31 +241,36 @@ class ScoreEvaluator:
             score_stddev = np.std(values)
             score_iqr = iqr(values)
             score_rounds = len(values)
-            output = pd.concat(
+            output_rows.append(
                 [
-                    output,
-                    pd.DataFrame(
-                        [
-                            [
-                                score_min,
-                                score_max,
-                                score_mean,
-                                score_stddev,
-                                score_median,
-                                score_iqr,
-                                score_rounds,
-                                errors,
-                                error_types,
-                                error_messages,
-                                durations,
-                                direction,
-                            ]
-                        ],
-                        columns=output_metrics,
-                        index=[metric],
-                    ),
-                ],
+                    score_min,
+                    score_max,
+                    score_mean,
+                    score_stddev,
+                    score_median,
+                    score_iqr,
+                    score_rounds,
+                    errors,
+                    error_types,
+                    error_messages,
+                    durations,
+                    direction,
+                ]
             )
+
+        if output_rows:
+            output = pd.DataFrame(
+                output_rows,
+                columns=output_metrics,
+                index=list(self.scores),
+            )
+            output["rounds"] = output["rounds"].astype(object)
+            output["errors"] = output["errors"].astype(object)
+            score_metrics = ["min", "max", "mean", "stddev", "median", "iqr"]
+            if output[score_metrics].isna().all().all():
+                output[score_metrics] = output[score_metrics].astype(object)
+        else:
+            output = pd.DataFrame([], columns=output_metrics)
 
         result_metadata = {
             key: dict(value) for key, value in self.result_metadata.items()

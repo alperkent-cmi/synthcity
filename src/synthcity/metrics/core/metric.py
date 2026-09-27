@@ -8,7 +8,7 @@ from typing import Callable, Dict, Optional
 import numpy as np
 import pandas as pd
 import torch
-from pydantic import validate_arguments
+from pydantic import validate_call
 
 # synthcity absolute
 from synthcity.metrics.representations.OneClass import OneClassLayer
@@ -43,7 +43,7 @@ class MetricEvaluator(metaclass=ABCMeta):
             Whether to use cache. If True, it will try to load saved results in workspace directory where possible.
     """
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         reduction: str = "mean",
@@ -69,12 +69,12 @@ class MetricEvaluator(metaclass=ABCMeta):
 
         workspace.mkdir(parents=True, exist_ok=True)
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     @abstractmethod
     def evaluate(self, X_gt: DataLoader, X_syn: DataLoader) -> Dict:
         ...
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     @abstractmethod
     def evaluate_default(self, X_gt: DataLoader, X_syn: DataLoader) -> float:
         ...

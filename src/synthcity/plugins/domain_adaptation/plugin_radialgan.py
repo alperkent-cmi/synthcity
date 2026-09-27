@@ -12,7 +12,7 @@ import pandas as pd
 import torch
 
 # Necessary packages
-from pydantic import validate_arguments
+from pydantic import validate_call
 from torch import nn
 from torch.utils.data import TensorDataset
 from tqdm import tqdm
@@ -83,7 +83,7 @@ class RadialGAN(nn.Module):
             Gradients clipping value. Zero disables the feature
     """
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         domains: List[int],
@@ -245,7 +245,7 @@ class RadialGAN(nn.Module):
 
             return samples, domains
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def forward(
         self, count: int, domains: Optional[List[int]] = None
     ) -> Tuple[torch.Tensor, List]:
@@ -611,7 +611,7 @@ class TabularRadialGAN(torch.nn.Module):
             The max number of clusters to create for continuous columns when encoding
     """
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         X: pd.DataFrame,
@@ -685,15 +685,15 @@ class TabularRadialGAN(torch.nn.Module):
             device=device,
         )
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def encode(self, X: pd.DataFrame) -> pd.DataFrame:
         return self.encoder.transform(X)
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def decode(self, X: pd.DataFrame) -> pd.DataFrame:
         return self.encoder.inverse_transform(X)
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def fit(
         self,
         X: pd.DataFrame,
@@ -707,7 +707,7 @@ class TabularRadialGAN(torch.nn.Module):
         )
         return self
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def generate(
         self,
         count: int,
@@ -784,7 +784,7 @@ class RadialGANPlugin(Plugin):
 
     """
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         n_iter: int = 2000,

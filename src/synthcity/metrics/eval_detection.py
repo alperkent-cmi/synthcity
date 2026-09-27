@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 # third party
 import numpy as np
 import torch
-from pydantic import validate_arguments
+from pydantic import validate_call
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
@@ -112,11 +112,11 @@ class DetectionEvaluator(MetricEvaluator):
     def name() -> str:
         raise NotImplementedError()
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def evaluate(self, X_gt: DataLoader, X_syn: DataLoader) -> Dict:
         raise NotImplementedError()
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _evaluate_detection_generic(
         self,
         model_template: Any,
@@ -191,7 +191,7 @@ class DetectionEvaluator(MetricEvaluator):
 
         return results
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def evaluate_default(
         self,
         X_gt: DataLoader,
@@ -222,7 +222,7 @@ class SyntheticDetectionXGB(DetectionEvaluator):
     def name() -> str:
         return "detection_xgb"
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def evaluate(self, X_gt: DataLoader, X_syn: DataLoader) -> Dict:
         # TODO: investigate why XGBoost always has high AUCROC for the detection
         model_template = XGBClassifier
@@ -260,7 +260,7 @@ class SyntheticDetectionMLP(DetectionEvaluator):
     def name() -> str:
         return "detection_mlp"
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _evaluate_image_detection(self, X_gt: DataLoader, X_syn: DataLoader) -> Dict:
         clear_cache()
 
@@ -330,7 +330,7 @@ class SyntheticDetectionMLP(DetectionEvaluator):
         save_to_file(cache_file, results)
         return results
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def evaluate(self, X_gt: DataLoader, X_syn: DataLoader) -> Dict:
         if X_gt.type() == "images":
             return self._evaluate_image_detection(X_gt, X_syn)
@@ -371,7 +371,7 @@ class SyntheticDetectionLinear(DetectionEvaluator):
     def name() -> str:
         return "detection_linear"
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def evaluate(self, X_gt: DataLoader, X_syn: DataLoader) -> Dict:
         model_args = {
             "random_state": self._random_state,
@@ -408,7 +408,7 @@ class SyntheticDetectionGMM(DetectionEvaluator):
     def name() -> str:
         return "detection_gmm"
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def evaluate(
         self,
         X_gt: DataLoader,

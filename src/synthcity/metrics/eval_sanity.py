@@ -4,7 +4,7 @@ from typing import Any, Dict
 # third party
 import numpy as np
 import pandas as pd
-from pydantic import validate_arguments
+from pydantic import validate_call
 from sklearn.neighbors import NearestNeighbors
 
 # synthcity absolute
@@ -46,7 +46,7 @@ class BasicMetricEvaluator(MetricEvaluator):
     def type() -> str:
         return "sanity"
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def evaluate_default(
         self,
         X_gt: DataLoader,
@@ -62,7 +62,7 @@ class BasicMetricEvaluator(MetricEvaluator):
     def direction() -> str:
         raise NotImplementedError()
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def evaluate(
         self,
         X_gt: DataLoader,
@@ -94,7 +94,7 @@ class DataMismatchScore(BasicMetricEvaluator):
     def direction() -> str:
         return "minimize"
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def evaluate(self, X_gt: DataLoader, X_syn: DataLoader) -> Dict:
         if X_gt.type() != X_syn.type():
             raise ValueError("Incompatible dataloader")
@@ -138,7 +138,7 @@ class CommonRowsProportion(BasicMetricEvaluator):
     def direction() -> str:
         return "minimize"
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def evaluate(self, X_gt: DataLoader, X_syn: DataLoader) -> Dict:
         if len(X_gt.columns) != len(X_syn.columns):
             raise ValueError(f"Incompatible dataframe {X_gt.shape} and {X_syn.shape}")
@@ -166,7 +166,7 @@ class NearestSyntheticNeighborDistance(BasicMetricEvaluator):
     def direction() -> str:
         return "minimize"
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def evaluate(self, X_gt: DataLoader, X_syn: DataLoader) -> Dict:
         if len(X_gt.columns) != len(X_syn.columns):
             raise ValueError(f"Incompatible dataframe {X_gt.shape} and {X_syn.shape}")
@@ -200,7 +200,7 @@ class CloseValuesProbability(BasicMetricEvaluator):
     def direction() -> str:
         return "maximize"
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def evaluate(self, X_gt: DataLoader, X_syn: DataLoader) -> Dict:
         if len(X_gt.columns) != len(X_syn.columns):
             raise ValueError(f"Incompatible dataframe {X_gt.shape} and {X_syn.shape}")
@@ -236,7 +236,7 @@ class DistantValuesProbability(BasicMetricEvaluator):
     def direction() -> str:
         return "minimize"
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def evaluate(self, X_gt: DataLoader, X_syn: DataLoader) -> Dict:
         if len(X_gt.columns) != len(X_syn.columns):
             raise ValueError(f"Incompatible dataframe {X_gt.shape} and {X_syn.shape}")

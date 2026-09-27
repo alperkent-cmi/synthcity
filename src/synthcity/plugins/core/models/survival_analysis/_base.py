@@ -4,7 +4,7 @@ from typing import Any, Dict, List
 
 # third party
 import pandas as pd
-from pydantic import validate_arguments
+from pydantic import validate_call
 
 # synthcity absolute
 from synthcity.plugins.core.distribution import Distribution
@@ -16,7 +16,7 @@ class SurvivalAnalysisPlugin(Serializable, metaclass=ABCMeta):
         super().__init__()
 
     @abstractmethod
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def fit(
         self, X: pd.DataFrame, T: pd.Series, Y: pd.Series, groups: Any = None
     ) -> Any:
@@ -24,7 +24,7 @@ class SurvivalAnalysisPlugin(Serializable, metaclass=ABCMeta):
         ...
 
     @abstractmethod
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def predict(self, X: pd.DataFrame, time_horizons: List) -> pd.DataFrame:
         "Predict risk"
         ...

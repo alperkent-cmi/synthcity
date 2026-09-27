@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import torch
 from geomloss import SamplesLoss
-from pydantic import validate_arguments
+from pydantic import validate_call
 from scipy.stats import multivariate_normal
 from sklearn.metrics import (
     accuracy_score,
@@ -30,7 +30,7 @@ from synthcity.plugins.core.models import bnaf
 from synthcity.utils.constants import DEVICE
 
 
-@validate_arguments(config=dict(arbitrary_types_allowed=True))
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def get_frequency(
     X_gt: pd.DataFrame, X_synth: pd.DataFrame, n_histogram_bins: int = 10
 ) -> dict:

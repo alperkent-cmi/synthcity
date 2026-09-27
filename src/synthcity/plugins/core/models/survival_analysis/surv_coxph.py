@@ -5,7 +5,7 @@ from typing import Any, List
 import numpy as np
 import pandas as pd
 from lifelines import CoxPHFitter
-from pydantic import validate_arguments
+from pydantic import validate_call
 
 # synthcity absolute
 from synthcity.plugins.core.distribution import Distribution, FloatDistribution
@@ -28,7 +28,7 @@ class CoxPHSurvivalAnalysis(SurvivalAnalysisPlugin):
         self.fit_options = fit_options
         self.model = CoxPHFitter(alpha=alpha, **kwargs)
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def fit(
         self, X: pd.DataFrame, T: pd.Series, Y: pd.Series, groups: Any = None
     ) -> "SurvivalAnalysisPlugin":
@@ -45,7 +45,7 @@ class CoxPHSurvivalAnalysis(SurvivalAnalysisPlugin):
 
         return self
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def predict(self, X: pd.DataFrame, time_horizons: List) -> pd.DataFrame:
         "Predict risk estimation"
 

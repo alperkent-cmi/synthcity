@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional, Union
 # third party
 import pandas as pd
 import torch
-from pydantic import validate_arguments
+from pydantic import validate_call
 
 try:
     # third party
@@ -87,7 +87,7 @@ class TabularGReaT(metaclass=ABCMeta):
             **self.train_kwargs,
         )
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def fit(
         self,
         X: pd.DataFrame,
@@ -114,7 +114,7 @@ class TabularGReaT(metaclass=ABCMeta):
         )
         return self
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def generate(
         self,
         count: int,

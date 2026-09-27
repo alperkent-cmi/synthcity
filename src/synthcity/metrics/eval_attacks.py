@@ -7,7 +7,7 @@ from typing import Any, Dict, Mapping
 # third party
 import numpy as np
 import pandas as pd
-from pydantic import validate_arguments
+from pydantic import validate_call
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.metrics import balanced_accuracy_score, f1_score
 from sklearn.preprocessing import LabelEncoder
@@ -237,7 +237,7 @@ class AttackEvaluator(MetricEvaluator):
     def type() -> str:
         return "attack"
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _evaluate_leakage(
         self,
         classifier_template: Any,
@@ -512,7 +512,7 @@ class AttackEvaluator(MetricEvaluator):
 
         return results
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def evaluate_default(
         self,
         X_gt: DataLoader,
@@ -537,7 +537,7 @@ class DataLeakageMLP(AttackEvaluator):
     def direction() -> str:
         return "minimize"
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def evaluate(
         self,
         X_gt: DataLoader,
@@ -579,7 +579,7 @@ class DataLeakageXGB(AttackEvaluator):
     def direction() -> str:
         return "minimize"
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def evaluate(
         self,
         X_gt: DataLoader,
@@ -615,7 +615,7 @@ class DataLeakageLinear(AttackEvaluator):
     def direction() -> str:
         return "minimize"
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def evaluate(
         self,
         X_gt: DataLoader,

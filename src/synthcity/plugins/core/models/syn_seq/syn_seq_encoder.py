@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional
 
 # third party
 import pandas as pd
-from pydantic import validate_arguments
+from pydantic import validate_call
 from sklearn.base import BaseEstimator, TransformerMixin
 
 
@@ -14,7 +14,7 @@ class Syn_SeqEncoder(TransformerMixin, BaseEstimator):
       - This encoder only sets up syn_order, method, and variable_selection.
     """
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         syn_order: Optional[List[str]] = None,

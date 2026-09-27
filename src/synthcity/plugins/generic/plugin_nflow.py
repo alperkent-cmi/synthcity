@@ -4,7 +4,7 @@ from typing import Any, List, Optional
 
 # third party
 import pandas as pd
-from pydantic import validate_arguments
+from pydantic import validate_call
 
 # synthcity absolute
 from synthcity.metrics.weighted_metrics import WeightedMetrics
@@ -107,7 +107,7 @@ class NormalizingFlowsPlugin(Plugin):
 
     """
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         n_iter: int = 1000,

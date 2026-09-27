@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import shap
 import torch
-from pydantic import validate_arguments
+from pydantic import validate_call
 from shap.utils._exceptions import ExplainerError
 from scipy.stats import kendalltau, spearmanr
 from sklearn.linear_model import LinearRegression, LogisticRegression
@@ -170,7 +170,7 @@ class PerformanceEvaluator(MetricEvaluator):
 
         return float(score)
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _evaluate_standard_performance(
         self,
         model: Any,
@@ -275,7 +275,7 @@ class PerformanceEvaluator(MetricEvaluator):
 
         return results
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _evaluate_survival_model(
         self,
         model: Any,
@@ -395,7 +395,7 @@ class PerformanceEvaluator(MetricEvaluator):
 
         return results
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _evaluate_time_series_performance(
         self,
         model: Any,
@@ -544,7 +544,7 @@ class PerformanceEvaluator(MetricEvaluator):
 
         return results
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _evaluate_time_series_survival_performance(
         self,
         model: Any,
@@ -691,7 +691,7 @@ class PerformanceEvaluator(MetricEvaluator):
 
         return results
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def evaluate_default(
         self,
         X_gt: DataLoader,
@@ -732,7 +732,7 @@ class PerformanceEvaluatorXGB(PerformanceEvaluator):
     def standard_performance_output_keys() -> List:
         return ["gt", "syn_id", "syn_ood"]
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def evaluate(
         self,
         X_gt: DataLoader,
@@ -809,7 +809,7 @@ class PerformanceEvaluatorLinear(PerformanceEvaluator):
     def standard_performance_output_keys() -> List:
         return ["gt", "syn_id", "syn_ood"]
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def evaluate(
         self,
         X_gt: DataLoader,
@@ -865,7 +865,7 @@ class PerformanceEvaluatorMLP(PerformanceEvaluator):
     def standard_performance_output_keys() -> List:
         return ["gt", "syn_id", "syn_ood"]
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _evaluate_image_clf(
         self,
         train_data: torch.utils.data.Dataset,
@@ -890,7 +890,7 @@ class PerformanceEvaluatorMLP(PerformanceEvaluator):
         score, _ = evaluate_auc(test_Y, test_pred)
         return score
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _evaluate_images(
         self,
         X_gt: DataLoader,
@@ -970,7 +970,7 @@ class PerformanceEvaluatorMLP(PerformanceEvaluator):
 
         return results
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def evaluate(
         self,
         X_gt: DataLoader,
@@ -1197,7 +1197,7 @@ class FeatureImportanceRankDistance(MetricEvaluator):
             )
         return {"corr": corr, "pvalue": pvalue}
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def evaluate(
         self,
         X_gt: DataLoader,
@@ -1383,7 +1383,7 @@ class FeatureImportanceRankDistance(MetricEvaluator):
         )
         return results
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def evaluate_default(
         self,
         X_gt: DataLoader,

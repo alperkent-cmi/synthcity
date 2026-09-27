@@ -7,7 +7,7 @@ from typing import Any, Optional, Sequence
 import numpy as np
 import pandas as pd
 import torch
-from pydantic import validate_arguments
+from pydantic import validate_call
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import trange
@@ -24,7 +24,7 @@ from .gaussian_multinomial_diffsuion import GaussianMultinomialDiffusion
 
 
 class TabDDPM(nn.Module, ValidationMixin):
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         n_iter: int = 1000,

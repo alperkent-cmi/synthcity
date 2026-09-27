@@ -5,7 +5,7 @@ from typing import Any, Dict, List
 # third party
 import numpy as np
 import pandas as pd
-from pydantic import validate_arguments
+from pydantic import validate_call
 from sklearn.model_selection import train_test_split
 from xgboost import XGBRegressor
 
@@ -43,7 +43,7 @@ class TimeToEventPlugin(Serializable, metaclass=ABCMeta):
         super().__init__()
 
     @abstractmethod
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def fit(
         self, X: pd.DataFrame, T: pd.Series, Y: pd.Series, groups: Any = None
     ) -> Any:
@@ -51,13 +51,13 @@ class TimeToEventPlugin(Serializable, metaclass=ABCMeta):
         ...
 
     @abstractmethod
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def predict(self, X: pd.DataFrame) -> pd.Series:
         "Predict time-to-event"
         ...
 
     @abstractmethod
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def predict_any(self, X: pd.DataFrame, E: pd.Series) -> pd.Series:
         "Predict time-to-event or censoring"
         ...
@@ -86,7 +86,7 @@ class TimeToEventPlugin(Serializable, metaclass=ABCMeta):
 
         return results
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _fit_censoring_model(self, X: pd.DataFrame, T: pd.Series, E: pd.Series) -> Any:
         xgb_params = {
             "n_jobs": 2,
@@ -99,6 +99,6 @@ class TimeToEventPlugin(Serializable, metaclass=ABCMeta):
 
         return self
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _predict_censoring(self, X: pd.DataFrame) -> Any:
         return self.tte_regressor.predict(X)

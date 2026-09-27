@@ -7,7 +7,7 @@ import pandas as pd
 import torch
 import torchtuples as tt
 from pycox.models import DeepHitSingle
-from pydantic import validate_arguments
+from pydantic import validate_call
 from sklearn.model_selection import train_test_split
 
 # synthcity absolute
@@ -57,7 +57,7 @@ class DeephitSurvivalAnalysis(SurvivalAnalysisPlugin):
         self.dropout = dropout
         self.batch_norm = batch_norm
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def fit(
         self, X: pd.DataFrame, T: pd.Series, E: pd.Series, groups: Any = None
     ) -> "SurvivalAnalysisPlugin":
@@ -138,7 +138,7 @@ class DeephitSurvivalAnalysis(SurvivalAnalysisPlugin):
 
         return self
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def predict(self, X: pd.DataFrame, time_horizons: List) -> pd.DataFrame:
         "Predict risk"
 

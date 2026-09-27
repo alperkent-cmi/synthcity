@@ -11,7 +11,7 @@ import pandas as pd
 import torch
 
 # Necessary packages
-from pydantic import validate_arguments
+from pydantic import validate_call
 
 # synthcity absolute
 from synthcity.plugins.core.dataloader import DataLoader
@@ -48,7 +48,7 @@ class ARFPlugin(Plugin):
 
     """
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         # n_iter: int = 1000,

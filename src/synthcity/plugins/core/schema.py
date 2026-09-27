@@ -9,7 +9,7 @@ from pydantic import (
     Field,
     field_validator,
     model_validator,
-    validate_arguments,
+    validate_call,
 )
 
 # synthcity absolute
@@ -80,7 +80,7 @@ class Schema(BaseModel):
                 model.__fields_set__.remove("data")
         return model
 
-    @validate_arguments
+    @validate_call
     def get(self, feature: str) -> Distribution:
         """Get the Distribution of a feature.
 
@@ -95,7 +95,7 @@ class Schema(BaseModel):
 
         return self.domain[feature]
 
-    @validate_arguments
+    @validate_call
     def __getitem__(self, key: str) -> Distribution:
         """Get the Distribution of a feature.
 

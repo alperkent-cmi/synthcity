@@ -2,11 +2,11 @@
 import numpy as np
 import pandas as pd
 from lifelines.utils import concordance_index
-from pydantic import validate_arguments
+from pydantic import validate_call
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 
-@validate_arguments(config=dict(arbitrary_types_allowed=True))
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def expected_time_error(
     T: pd.Series,
     E: pd.Series,
@@ -55,7 +55,7 @@ def expected_time_error(
     return err
 
 
-@validate_arguments(config=dict(arbitrary_types_allowed=True))
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def expected_time_error_l1(
     T: pd.Series,
     E: pd.Series,
@@ -85,7 +85,7 @@ def expected_time_error_l1(
     return err
 
 
-@validate_arguments(config=dict(arbitrary_types_allowed=True))
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def ranking_error(T: pd.Series, E: pd.Series, pred_T: pd.Series) -> float:
     """
     Returns an error for the out-of-order predictions.
@@ -105,7 +105,7 @@ def ranking_error(T: pd.Series, E: pd.Series, pred_T: pd.Series) -> float:
     return rank_errs
 
 
-@validate_arguments(config=dict(arbitrary_types_allowed=True))
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def c_index(T: pd.Series, E: pd.Series, pred_T: pd.Series) -> float:
     """
     Returns the cindex.
@@ -118,7 +118,7 @@ def c_index(T: pd.Series, E: pd.Series, pred_T: pd.Series) -> float:
         return 0
 
 
-@validate_arguments(config=dict(arbitrary_types_allowed=True))
+@validate_call(config=dict(arbitrary_types_allowed=True))
 def rush_error(T: pd.Series, pred_T: pd.Series) -> float:
     """
     Returns the proportions of time-to-event predictions before the actual observed/censoring time.

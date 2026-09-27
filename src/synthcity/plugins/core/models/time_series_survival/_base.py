@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 
 # third party
 import numpy as np
-from pydantic import validate_arguments
+from pydantic import validate_call
 
 # synthcity absolute
 from synthcity.plugins.core.distribution import Distribution
@@ -16,7 +16,7 @@ class TimeSeriesSurvivalPlugin(Serializable, metaclass=ABCMeta):
         super().__init__()
 
     @abstractmethod
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def fit(
         self,
         static: Optional[np.ndarray],
@@ -30,7 +30,7 @@ class TimeSeriesSurvivalPlugin(Serializable, metaclass=ABCMeta):
         ...
 
     @abstractmethod
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def predict(
         self,
         static: Optional[np.ndarray],

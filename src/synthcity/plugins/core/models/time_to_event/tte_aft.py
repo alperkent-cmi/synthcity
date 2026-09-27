@@ -4,7 +4,7 @@ from typing import Any, List, Optional
 # third party
 import pandas as pd
 from lifelines import WeibullAFTFitter
-from pydantic import validate_arguments
+from pydantic import validate_call
 
 try:
     # third party
@@ -33,7 +33,7 @@ class WeibullAFTTimeToEvent(TimeToEventPlugin):
 
         self.model = WeibullAFTFitter(**kwargs)
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def fit(
         self,
         X: pd.DataFrame,
@@ -52,7 +52,7 @@ class WeibullAFTTimeToEvent(TimeToEventPlugin):
 
         return self
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def predict(self, X: pd.DataFrame) -> pd.Series:
         "Predict time-to-event"
 
@@ -60,7 +60,7 @@ class WeibullAFTTimeToEvent(TimeToEventPlugin):
 
         return pd.Series(trapz(surv_f.values.T, surv_f.index), index=surv_f.T.index)
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def predict_any(self, X: pd.DataFrame, E: pd.Series) -> pd.Series:
         "Predict time-to-event"
 

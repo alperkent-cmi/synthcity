@@ -5,7 +5,7 @@ from typing import Any, List
 import numpy as np
 import pandas as pd
 import shap
-from pydantic import validate_arguments
+from pydantic import validate_call
 from xgbse import XGBSEDebiasedBCE, XGBSEKaplanNeighbors, XGBSEStackedWeibull
 from xgbse.converters import convert_to_structured
 
@@ -91,7 +91,7 @@ class XGBSurvivalAnalysis(SurvivalAnalysisPlugin):
 
         self.time_points = time_points
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def fit(
         self, X: pd.DataFrame, T: pd.Series, Y: pd.Series, groups: Any = None
     ) -> "SurvivalAnalysisPlugin":
@@ -117,7 +117,7 @@ class XGBSurvivalAnalysis(SurvivalAnalysisPlugin):
         idx = (np.abs(array - value)).argmin()
         return array[idx]
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def predict(self, X: pd.DataFrame, time_horizons: List) -> pd.DataFrame:
         "Predict risk"
         chunks = int(len(X) / 1024) + 1
@@ -136,7 +136,7 @@ class XGBSurvivalAnalysis(SurvivalAnalysisPlugin):
             np.concatenate(preds_, axis=0), columns=time_horizons, index=X.index
         )
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def explain(self, X: pd.DataFrame) -> np.ndarray:
         explainer = shap.TreeExplainer(self.model.bst)
 

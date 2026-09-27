@@ -10,7 +10,7 @@ from typing import Any, Dict, Tuple, Union
 import numpy as np
 import pandas as pd
 import torch
-from pydantic import validate_arguments
+from pydantic import validate_call
 from scipy import stats
 from scipy.stats import entropy
 from sklearn.cluster import KMeans
@@ -81,7 +81,7 @@ class PrivacyEvaluator(MetricEvaluator):
     ) -> Dict:
         ...
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def evaluate(
         self, X_gt: DataLoader, X_syn: DataLoader, *args: Any, **kwargs: Any
     ) -> Dict:
@@ -118,7 +118,7 @@ class PrivacyEvaluator(MetricEvaluator):
             save_to_file(cache_file, results)
         return results
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def evaluate_default(
         self,
         X_gt: DataLoader,
@@ -229,7 +229,7 @@ class kAnonymization(StructuralPrivacyEvaluator):
     def direction() -> str:
         return "maximize"
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def evaluate_data(self, X: DataLoader) -> int:
         features = _utils.get_features(X, X.sensitive_features)
 
@@ -240,7 +240,7 @@ class kAnonymization(StructuralPrivacyEvaluator):
 
         return int(np.min(values))
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _evaluate(self, X_gt: DataLoader, X_syn: DataLoader) -> Dict:
         if X_gt.type() == "images":
             raise ValueError(f"Metric {self.name()} doesn't support images")
@@ -288,7 +288,7 @@ class lDiversityDistinct(StructuralPrivacyEvaluator):
 
         return int(np.min(values))
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _evaluate(self, X_gt: DataLoader, X_syn: DataLoader) -> Dict:
         if X_gt.type() == "images":
             raise ValueError(f"Metric {self.name()} doesn't support images")
@@ -320,7 +320,7 @@ class kMap(StructuralPrivacyEvaluator):
     def direction() -> str:
         return "maximize"
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _evaluate(self, X_gt: DataLoader, X_syn: DataLoader) -> Dict:
         if X_gt.type() == "images":
             raise ValueError(f"Metric {self.name()} doesn't support images")
@@ -360,7 +360,7 @@ class DeltaPresence(StructuralPrivacyEvaluator):
     def direction() -> str:
         return "minimize"
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _evaluate(self, X_gt: DataLoader, X_syn: DataLoader) -> Dict:
         if X_gt.type() == "images":
             raise ValueError(f"Metric {self.name()} doesn't support images")
@@ -471,7 +471,7 @@ class IdentifiabilityScore(PrivacyEvaluator):
             },
         }
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _evaluate(
         self,
         X_gt: DataLoader,
@@ -503,7 +503,7 @@ class IdentifiabilityScore(PrivacyEvaluator):
         log.info("ID_score results: ", results)
         return results
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _compute_scores(
         self,
         X_gt: DataLoader,
@@ -661,7 +661,7 @@ class DomiasMIA(PrivacyEvaluator):
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()[:16]
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def evaluate_default(
         self,
         X_gt: DataLoader,
@@ -689,7 +689,7 @@ class DomiasMIA(PrivacyEvaluator):
     ) -> Any:
         ...
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def _evaluate(
         self,
         X_gt: Union[

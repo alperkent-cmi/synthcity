@@ -3,7 +3,7 @@ from typing import Any, List, Optional, cast
 
 # third party
 import pandas as pd
-from pydantic import validate_arguments
+from pydantic import validate_call
 
 # synthcity absolute
 from synthcity.plugins.core.dataloader import DataLoader, Syn_SeqDataLoader
@@ -59,7 +59,7 @@ class Syn_SeqPlugin(Plugin):
     def hyperparameter_space(**kwargs: Any) -> List:
         return []
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         sampling_patience: int = 100,

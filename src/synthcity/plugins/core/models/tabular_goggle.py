@@ -6,7 +6,7 @@ from typing import Any, Optional, Union
 import numpy as np
 import pandas as pd
 import torch
-from pydantic import validate_arguments
+from pydantic import validate_call
 
 # synthcity absolute
 from synthcity.utils.constants import DEVICE
@@ -193,11 +193,11 @@ class TabularGoggle(metaclass=ABCMeta):
                 weight_decay=self.weight_decay,
             )
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def encode(self, X: pd.DataFrame) -> pd.DataFrame:
         return self.encoder.transform(X)
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def decode(self, X: pd.DataFrame) -> pd.DataFrame:
         return self.encoder.inverse_transform(X)
 
@@ -212,7 +212,7 @@ class TabularGoggle(metaclass=ABCMeta):
         else:
             return X
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def fit(
         self,
         X: pd.DataFrame,
@@ -231,7 +231,7 @@ class TabularGoggle(metaclass=ABCMeta):
         )
         return self
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def generate(
         self,
         count: int,
@@ -241,7 +241,7 @@ class TabularGoggle(metaclass=ABCMeta):
         samples = self.decode(pd.DataFrame(samples))
         return pd.DataFrame(samples)
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def forward(
         self,
         count: int,

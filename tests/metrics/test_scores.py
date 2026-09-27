@@ -1,7 +1,126 @@
+import warnings
+
 import numpy as np
 import pytest
 
 from synthcity.metrics.scores import ScoreEvaluator
+
+
+def test_dataframe_aggregation_preserves_order_and_schema_without_concat_warning():
+    scores = ScoreEvaluator()
+    scores.add_multiple(
+        "stats.failed_first",
+        {},
+        failed=1,
+        duration=0.25,
+        direction="minimize",
+        error="first failure",
+        error_type="ValueError",
+    )
+    scores.add("stats.success", 0.75, failed=0, duration=0.5, direction="maximize")
+    scores.add_multiple(
+        "stats.failed_last",
+        {},
+        failed=1,
+        duration=0.75,
+        direction="minimize",
+        error="last failure",
+        error_type="RuntimeError",
+    )
+
+    with warnings.catch_warnings(record=True) as warnings_record:
+        warnings.simplefilter("always")
+        report = scores.to_dataframe()
+
+    assert not [
+        warning
+        for warning in warnings_record
+        if issubclass(warning.category, FutureWarning)
+        and "DataFrame concatenation with empty or all-NA entries"
+        in str(warning.message)
+    ]
+    assert list(report.index) == [
+        "stats.failed_first",
+        "stats.success",
+        "stats.failed_last",
+    ]
+    assert list(report.columns) == [
+        "min",
+        "max",
+        "mean",
+        "stddev",
+        "median",
+        "iqr",
+        "rounds",
+        "errors",
+        "error_types",
+        "error_messages",
+        "durations",
+        "direction",
+    ]
+    assert report.loc["stats.success", "mean"] == pytest.approx(0.75)
+    assert report.loc["stats.success", "rounds"] == 1
+    assert report.loc["stats.success", "errors"] == 0
+    assert np.isnan(report.loc["stats.failed_first", "mean"])
+    assert report.loc["stats.failed_first", "errors"] == 1
+    assert report.loc["stats.failed_first", "error_types"] == "ValueError"
+    assert report.loc["stats.failed_first", "error_messages"] == "first failure"
+    assert np.isnan(report.loc["stats.failed_last", "mean"])
+    assert report.loc["stats.failed_last", "error_types"] == "RuntimeError"
+    assert report.dtypes.astype(str).to_dict() == {
+        "min": "float64",
+        "max": "float64",
+        "mean": "float64",
+        "stddev": "float64",
+        "median": "float64",
+        "iqr": "float64",
+        "rounds": "object",
+        "errors": "object",
+        "error_types": "object",
+        "error_messages": "object",
+        "durations": "float64",
+        "direction": "object",
+    }
+
+
+def test_dataframe_all_missing_scores_keep_object_stat_dtypes_without_concat_warning():
+    scores = ScoreEvaluator()
+    scores.add_multiple(
+        "stats.failed",
+        {},
+        failed=1,
+        duration=0.25,
+        direction="minimize",
+    )
+
+    with warnings.catch_warnings(record=True) as warnings_record:
+        warnings.simplefilter("always")
+        report = scores.to_dataframe()
+
+    assert not [
+        warning
+        for warning in warnings_record
+        if issubclass(warning.category, FutureWarning)
+        and "DataFrame concatenation with empty or all-NA entries"
+        in str(warning.message)
+    ]
+    assert list(report.index) == ["stats.failed"]
+    assert np.isnan(report.loc["stats.failed", "mean"])
+    assert report.loc["stats.failed", "errors"] == 1
+    assert report.dtypes.astype(str).to_dict() == {
+        "min": "object",
+        "max": "object",
+        "mean": "object",
+        "stddev": "object",
+        "median": "object",
+        "iqr": "object",
+        "rounds": "object",
+        "errors": "object",
+        "error_types": "object",
+        "error_messages": "object",
+        "durations": "float64",
+        "direction": "object",
+    }
 
 
 def test_failed_metric_without_submetrics_is_materialized():

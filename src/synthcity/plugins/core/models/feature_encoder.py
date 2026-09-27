@@ -4,7 +4,7 @@ from typing import Any, List, Optional, Type, Union
 # third party
 import numpy as np
 import pandas as pd
-from pydantic import validate_arguments
+from pydantic import validate_call
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.mixture import BayesianGaussianMixture
 from sklearn.preprocessing import (
@@ -60,7 +60,7 @@ class FeatureEncoder(TransformerMixin, BaseEstimator):  # type: ignore
         if n_dim_out is not None:
             self.n_dim_out = n_dim_out
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def fit(self, x: pd.Series, y: Any = None, **kwargs: Any) -> FeatureEncoder:
         self.feature_name_in = x.name
         self.feature_type_in = self._get_feature_type(x)
@@ -79,7 +79,7 @@ class FeatureEncoder(TransformerMixin, BaseEstimator):  # type: ignore
     def _fit(self, x: np.ndarray, **kwargs: Any) -> FeatureEncoder:
         return self
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def transform(self, x: pd.Series) -> Union[pd.DataFrame, pd.Series]:
         data = validate_shape(x.values, self.n_dim_in)
         out = self._transform(data)
@@ -113,7 +113,7 @@ class FeatureEncoder(TransformerMixin, BaseEstimator):  # type: ignore
         else:
             return "discrete"
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def inverse_transform(self, df: Union[pd.DataFrame, pd.Series]) -> pd.Series:
         y = df.values.reshape(self._out_shape)
         x = self._inverse_transform(y)

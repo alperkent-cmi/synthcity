@@ -7,7 +7,7 @@ import numpy as np
 import torch
 
 # Necessary packages
-from pydantic import validate_arguments
+from pydantic import validate_call
 from torch import nn
 
 # synthcity absolute
@@ -102,7 +102,7 @@ class ImageCGANPlugin(Plugin):
         >>> assert len(X_gen) == 50
     """
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def __init__(
         self,
         n_units_latent: int = 100,

@@ -4,7 +4,7 @@ from typing import Any, List, Optional
 # third party
 import numpy as np
 import pandas as pd
-from pydantic import validate_arguments
+from pydantic import validate_call
 
 # synthcity absolute
 from synthcity.plugins.core.distribution import Distribution
@@ -71,7 +71,7 @@ class CoxTimeSeriesSurvival(TimeSeriesSurvivalPlugin):
             penalizer=penalizer,
         )
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def fit(
         self,
         static: Optional[np.ndarray],
@@ -92,7 +92,7 @@ class CoxTimeSeriesSurvival(TimeSeriesSurvivalPlugin):
 
         return self
 
-    @validate_arguments(config=dict(arbitrary_types_allowed=True))
+    @validate_call(config=dict(arbitrary_types_allowed=True))
     def predict(
         self,
         static: Optional[np.ndarray],
