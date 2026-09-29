@@ -1,6 +1,10 @@
 # stdlib
+import logging
+import sys
+import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 # third party
 import numpy as np
@@ -112,6 +116,48 @@ GROUP_UNSAFE_MODALITIES = frozenset(
     {"syn_seq", "images", "time_series", "time_series_survival"}
 )
 
+logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _evaluation_phase(phase: str, *, model: str, role: str, **safe_counts: Any):
+    """Log evaluation phase boundaries without exception or data contents."""
+    started = time.monotonic()
+    safe_context = " ".join(f"{key}={value}" for key, value in safe_counts.items())
+    logger.debug(
+        "[synthcity] phase start model=%s role=%s phase=%s %s",
+        model,
+        role,
+        phase,
+        safe_context,
+    )
+    try:
+        yield
+    finally:
+        exception_type, _, _ = sys.exc_info()
+        elapsed = time.monotonic() - started
+        if exception_type is None:
+            logger.debug(
+                "[synthcity] phase completed model=%s role=%s phase=%s "
+                "elapsed_seconds=%.3f %s",
+                model,
+                role,
+                phase,
+                elapsed,
+                safe_context,
+            )
+        else:
+            logger.debug(
+                "[synthcity] phase failed model=%s role=%s phase=%s "
+                "elapsed_seconds=%.3f exception_type=%s reason_code=phase_failed %s",
+                model,
+                role,
+                phase,
+                elapsed,
+                exception_type.__name__,
+                safe_context,
+            )
+
 
 def _group_unsafe_report(
     metrics: Optional[Dict],
@@ -215,6 +261,9 @@ class Metrics:
         X_ref_syn_group_ids: Optional[Any] = None,
         X_augmented_group_ids: Optional[Any] = None,
         semantic_context: Optional[Dict[str, Any]] = None,
+        progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
+        progress_model: Optional[str] = None,
+        progress_role: Optional[str] = None,
     ) -> pd.DataFrame:
         """Core evaluation logic for the metrics
 
@@ -271,51 +320,77 @@ class Metrics:
             "time_series",
             "time_series_survival",
         ]
-        if task_type not in supported_tasks:
-            raise ValueError(
-                f"Invalid task type {task_type}. Supported: {supported_tasks}"
-            )
-        if group_mode not in {"row", "patient_group"}:
-            raise ValueError(
-                f"Invalid group mode {group_mode!r}. Supported: ['row', 'patient_group']"
-            )
+        model_identifier = progress_model or "unspecified"
+        role_identifier = progress_role or "unspecified"
+        with _evaluation_phase(
+            "group_task_checks",
+            model=model_identifier,
+            role=role_identifier,
+            gt_rows=len(X_gt),
+            syn_rows=len(X_syn),
+        ):
+            if task_type not in supported_tasks:
+                raise ValueError(
+                    f"Invalid task type {task_type}. Supported: {supported_tasks}"
+                )
+            if group_mode not in {"row", "patient_group"}:
+                raise ValueError(
+                    f"Invalid group mode {group_mode!r}. Supported: ['row', 'patient_group']"
+                )
 
-        supplied_loaders = {
-            label: loader
-            for label, loader in (
-                ("X_gt", X_gt),
-                ("X_syn", X_syn),
-                ("X_train", X_train),
-                ("X_ref_syn", X_ref_syn),
-                ("X_augmented", X_augmented),
-            )
-            if loader is not None
-        }
-        loader_types = {
-            label: loader.type() if isinstance(loader, DataLoader) else "generic"
-            for label, loader in supplied_loaders.items()
-        }
-        unsupported_modalities = sorted(
-            {
-                loader_type
-                for loader_type in loader_types.values()
-                if loader_type in GROUP_UNSAFE_MODALITIES
+        with _evaluation_phase(
+            "loader_validation",
+            model=model_identifier,
+            role=role_identifier,
+            loader_count=sum(
+                loader is not None
+                for loader in (X_gt, X_syn, X_train, X_ref_syn, X_augmented)
+            ),
+            gt_rows=len(X_gt),
+            syn_rows=len(X_syn),
+        ):
+            supplied_loaders = {
+                label: loader
+                for label, loader in (
+                    ("X_gt", X_gt),
+                    ("X_syn", X_syn),
+                    ("X_train", X_train),
+                    ("X_ref_syn", X_ref_syn),
+                    ("X_augmented", X_augmented),
+                )
+                if loader is not None
             }
-        )
-        if group_mode == "patient_group" and unsupported_modalities:
-            return _group_unsafe_report(
-                metrics,
-                task_type,
-                semantic_context,
-                group_mode=group_mode,
-                loader_types=loader_types,
-                reason=(
-                    "Patient-group SynthCity evaluation is not supported for loader type(s) "
-                    f"{unsupported_modalities}; metric internals require a group-aware implementation"
-                ),
+            loader_types = {
+                label: loader.type() if isinstance(loader, DataLoader) else "generic"
+                for label, loader in supplied_loaders.items()
+            }
+            unsupported_modalities = sorted(
+                {
+                    loader_type
+                    for loader_type in loader_types.values()
+                    if loader_type in GROUP_UNSAFE_MODALITIES
+                }
             )
+            if group_mode == "patient_group" and unsupported_modalities:
+                return _group_unsafe_report(
+                    metrics,
+                    task_type,
+                    semantic_context,
+                    group_mode=group_mode,
+                    loader_types=loader_types,
+                    reason=(
+                        "Patient-group SynthCity evaluation is not supported for loader type(s) "
+                        f"{unsupported_modalities}; metric internals require a group-aware implementation"
+                    ),
+                )
 
-        workspace.mkdir(parents=True, exist_ok=True)
+        with _evaluation_phase(
+            "workspace_preparation",
+            model=model_identifier,
+            role=role_identifier,
+            loader_count=5,
+        ):
+            workspace.mkdir(parents=True, exist_ok=True)
 
         def _check_group_ids(loader: DataLoader, group_ids: Any, label: str) -> None:
             if group_ids is None:
@@ -329,7 +404,9 @@ class Metrics:
             actual = np.empty(len(actual_values), dtype=object)
             actual[:] = actual_values
             if len(expected) != len(actual) or not np.array_equal(expected, actual):
-                raise ValueError(f"{label} loader group_ids do not match the supplied values")
+                raise ValueError(
+                    f"{label} loader group_ids do not match the supplied values"
+                )
 
         def _info_without_groups(loader: DataLoader, group_ids: Any = None) -> dict:
             info = dict(loader.info())
@@ -338,143 +415,175 @@ class Metrics:
                 info["group_ids"] = list(group_ids)
             return info
 
-        if not isinstance(X_gt, DataLoader):
-            X_gt = GenericDataLoader(X_gt, group_ids=X_gt_group_ids)
-        else:
-            _check_group_ids(X_gt, X_gt_group_ids, "X_gt")
-        if not isinstance(X_syn, DataLoader):
-            X_syn = create_from_info(X_syn, _info_without_groups(X_gt, X_syn_group_ids))
-        else:
-            _check_group_ids(X_syn, X_syn_group_ids, "X_syn")
-        if X_train is not None and not isinstance(X_train, DataLoader):
-            X_train = GenericDataLoader(X_train, group_ids=X_train_group_ids)
-        elif X_train is not None:
-            _check_group_ids(X_train, X_train_group_ids, "X_train")
-        if X_ref_syn is not None and not isinstance(X_ref_syn, DataLoader):
-            X_ref_syn = create_from_info(
-                X_ref_syn, _info_without_groups(X_gt, X_ref_syn_group_ids)
-            )
-        elif X_ref_syn is not None:
-            _check_group_ids(X_ref_syn, X_ref_syn_group_ids, "X_ref_syn")
-        if X_augmented is not None and not isinstance(X_augmented, DataLoader):
-            X_augmented = create_from_info(
-                X_augmented, _info_without_groups(X_gt, X_augmented_group_ids)
-            )
-        elif X_augmented is not None:
-            _check_group_ids(X_augmented, X_augmented_group_ids, "X_augmented")
-
-        grouped_loaders = [
-            loader
-            for loader in (X_gt, X_syn, X_train, X_ref_syn, X_augmented)
-            if loader is not None and loader.group_ids is not None
-        ]
-        if group_mode == "patient_group":
-            missing_group_loaders = [
-                label
-                for label, loader in (
-                    ("X_gt", X_gt),
-                    ("X_syn", X_syn),
-                    ("X_train", X_train),
-                    ("X_ref_syn", X_ref_syn),
-                    ("X_augmented", X_augmented),
+        with _evaluation_phase(
+            "loader_validation_conversion",
+            model=model_identifier,
+            role=role_identifier,
+            loader_count=len(supplied_loaders),
+        ):
+            if not isinstance(X_gt, DataLoader):
+                X_gt = GenericDataLoader(X_gt, group_ids=X_gt_group_ids)
+            else:
+                _check_group_ids(X_gt, X_gt_group_ids, "X_gt")
+            if not isinstance(X_syn, DataLoader):
+                X_syn = create_from_info(
+                    X_syn, _info_without_groups(X_gt, X_syn_group_ids)
                 )
-                if loader is not None and loader.group_ids is None
+            else:
+                _check_group_ids(X_syn, X_syn_group_ids, "X_syn")
+            if X_train is not None and not isinstance(X_train, DataLoader):
+                X_train = GenericDataLoader(X_train, group_ids=X_train_group_ids)
+            elif X_train is not None:
+                _check_group_ids(X_train, X_train_group_ids, "X_train")
+            if X_ref_syn is not None and not isinstance(X_ref_syn, DataLoader):
+                X_ref_syn = create_from_info(
+                    X_ref_syn, _info_without_groups(X_gt, X_ref_syn_group_ids)
+                )
+            elif X_ref_syn is not None:
+                _check_group_ids(X_ref_syn, X_ref_syn_group_ids, "X_ref_syn")
+            if X_augmented is not None and not isinstance(X_augmented, DataLoader):
+                X_augmented = create_from_info(
+                    X_augmented, _info_without_groups(X_gt, X_augmented_group_ids)
+                )
+            elif X_augmented is not None:
+                _check_group_ids(X_augmented, X_augmented_group_ids, "X_augmented")
+
+        with _evaluation_phase(
+            "group_loader_metadata_resolution",
+            model=model_identifier,
+            role=role_identifier,
+            loader_count=sum(
+                loader is not None
+                for loader in (X_gt, X_syn, X_train, X_ref_syn, X_augmented)
+            ),
+        ):
+            grouped_loaders = [
+                loader
+                for loader in (X_gt, X_syn, X_train, X_ref_syn, X_augmented)
+                if loader is not None and loader.group_ids is not None
             ]
-            if missing_group_loaders:
+            if group_mode == "patient_group":
+                missing_group_loaders = [
+                    label
+                    for label, loader in (
+                        ("X_gt", X_gt),
+                        ("X_syn", X_syn),
+                        ("X_train", X_train),
+                        ("X_ref_syn", X_ref_syn),
+                        ("X_augmented", X_augmented),
+                    )
+                    if loader is not None and loader.group_ids is None
+                ]
+                if missing_group_loaders:
+                    return _group_unsafe_report(
+                        metrics,
+                        task_type,
+                        semantic_context,
+                        group_mode=group_mode,
+                        loader_types=loader_types,
+                        reason=(
+                            "Patient-group SynthCity evaluation requires aligned group IDs for "
+                            f"loader(s) {missing_group_loaders}"
+                        ),
+                    )
+            if grouped_loaders and task_type not in {"classification", "regression"}:
                 return _group_unsafe_report(
                     metrics,
                     task_type,
                     semantic_context,
                     group_mode=group_mode,
                     loader_types=loader_types,
-                    reason=(
-                        "Patient-group SynthCity evaluation requires aligned group IDs for "
-                        f"loader(s) {missing_group_loaders}"
-                    ),
                 )
-        if grouped_loaders and task_type not in {"classification", "regression"}:
-            return _group_unsafe_report(
-                metrics,
-                task_type,
-                semantic_context,
-                group_mode=group_mode,
-                loader_types=loader_types,
-            )
 
-        resolved_feature_types = dict(
-            feature_types or getattr(X_gt, "feature_types", {}) or {}
-        )
-        if not resolved_feature_types:
-            for column in X_gt.dataframe().columns:
-                series = X_gt.dataframe()[column]
-                resolved_feature_types[column] = (
-                    "categorical"
-                    if (
-                        pd.api.types.is_object_dtype(series)
-                        or isinstance(series.dtype, pd.CategoricalDtype)
-                        or pd.api.types.is_bool_dtype(series)
+            resolved_feature_types = dict(feature_types or getattr(X_gt, "feature_types", {}) or {})
+            if not resolved_feature_types:
+                for column in X_gt.dataframe().columns:
+                    series = X_gt.dataframe()[column]
+                    resolved_feature_types[column] = (
+                        "categorical"
+                        if (
+                            pd.api.types.is_object_dtype(series)
+                            or isinstance(series.dtype, pd.CategoricalDtype)
+                            or pd.api.types.is_bool_dtype(series)
+                        )
+                        else "continuous"
                     )
-                    else "continuous"
+            resolved_source_table = dict(source_table or getattr(X_gt, "source_table", {}) or {})
+
+        with _evaluation_phase(
+            "group_task_checks",
+            model=model_identifier,
+            role=role_identifier,
+            gt_rows=len(X_gt),
+            syn_rows=len(X_syn),
+            grouped_loader_count=len(grouped_loaders),
+        ):
+            if X_gt.type() != X_syn.type():
+                raise ValueError("Different dataloader types")
+
+            if task_type == "survival_analysis":
+                if (
+                    X_gt.type() != "survival_analysis"
+                    and X_train.type() != "survival_analysis"
+                ):
+                    raise ValueError("Invalid dataloader for survival analysis")
+            elif task_type == "time_series":
+                if X_gt.type() != "time_series" and X_train.type() != "time_series":
+                    raise ValueError("Invalid dataloader for time series")
+            elif task_type == "time_series_survival":
+                if (
+                    X_gt.type() != "time_series_survival"
+                    and X_train.type() != "time_series_survival"
+                ):
+                    raise ValueError(
+                        "Invalid dataloader for time series survival analysis"
+                    )
+
+        with _evaluation_phase(
+            "metric_input_checks",
+            model=model_identifier,
+            role=role_identifier,
+        ):
+            if metrics is None:
+                metrics = Metrics.list()
+
+            resolved_sensitive_target_types = dict(sensitive_target_types or {})
+            if metrics.get("attack"):
+                missing_target_types = sorted(
+                    set(X_gt.sensitive_features) - set(resolved_sensitive_target_types)
                 )
-        resolved_source_table = dict(
-            source_table or getattr(X_gt, "source_table", {}) or {}
-        )
+                if missing_target_types:
+                    raise ValueError(
+                        "Attribute-inference attacks require schema-defined sensitive_target_types "
+                        f"for targets: {missing_target_types}"
+                    )
 
-        if X_gt.type() != X_syn.type():
-            raise ValueError("Different dataloader types")
-
-        if task_type == "survival_analysis":
-            if (
-                X_gt.type() != "survival_analysis"
-                and X_train.type() != "survival_analysis"
-            ):
-                raise ValueError("Invalid dataloader for survival analysis")
-        elif task_type == "time_series":
-            if X_gt.type() != "time_series" and X_train.type() != "time_series":
-                raise ValueError("Invalid dataloader for time series")
-        elif task_type == "time_series_survival":
-            if (
-                X_gt.type() != "time_series_survival"
-                and X_train.type() != "time_series_survival"
-            ):
-                raise ValueError("Invalid dataloader for time series survival analysis")
-
-        if metrics is None:
-            metrics = Metrics.list()
-
-        resolved_sensitive_target_types = dict(sensitive_target_types or {})
-        if metrics.get("attack"):
-            missing_target_types = sorted(
-                set(X_gt.sensitive_features) - set(resolved_sensitive_target_types)
+            domias_selected = any(
+                "DomiasMIA" in metric_name
+                for metric_names in metrics.values()
+                for metric_name in metric_names
             )
-            if missing_target_types:
-                raise ValueError(
-                    "Attribute-inference attacks require schema-defined sensitive_target_types "
-                    f"for targets: {missing_target_types}"
+            if domias_selected:
+                if X_train is None or X_ref_syn is None:
+                    raise ValueError(
+                        "DOMIAS metrics require X_train and X_ref_syn loaders"
+                    )
+                resolved_domias_reference_size = (
+                    len(X_gt) // 2
+                    if domias_reference_size is None
+                    else domias_reference_size
                 )
-
-        domias_selected = any(
-            "DomiasMIA" in metric_name
-            for metric_names in metrics.values()
-            for metric_name in metric_names
-        )
-        if domias_selected:
-            if X_train is None or X_ref_syn is None:
-                raise ValueError("DOMIAS metrics require X_train and X_ref_syn loaders")
-            resolved_domias_reference_size = (
-                len(X_gt) // 2 if domias_reference_size is None else domias_reference_size
-            )
-            if (
-                isinstance(resolved_domias_reference_size, bool)
-                or not isinstance(resolved_domias_reference_size, int)
-                or resolved_domias_reference_size < 1
-            ):
-                raise ValueError(
-                    "domias_reference_size must be a positive integer or None, got "
-                    f"{domias_reference_size!r}"
-                )
-        else:
-            resolved_domias_reference_size = None
+                if (
+                    isinstance(resolved_domias_reference_size, bool)
+                    or not isinstance(resolved_domias_reference_size, int)
+                    or resolved_domias_reference_size < 1
+                ):
+                    raise ValueError(
+                        "domias_reference_size must be a positive integer or None, got "
+                        f"{domias_reference_size!r}"
+                    )
+            else:
+                resolved_domias_reference_size = None
 
         """Fit categorical encoders on real fit data and transform every other role.
 
@@ -483,20 +592,34 @@ class Metrics:
         as an evaluation failure rather than changing the feature mapping.
         """
         fit_loader = X_train if X_train is not None else X_gt
-        _, encoders = fit_loader.encode()
+        with _evaluation_phase(
+            "encoder_fit_transform",
+            model=model_identifier,
+            role=role_identifier,
+            loader_count=sum(
+                loader is not None
+                for loader in (X_gt, X_syn, X_train, X_ref_syn, X_augmented)
+            ),
+        ):
+            _, encoders = fit_loader.encode()
 
-        # now we encode the data
-        X_gt, _ = X_gt.encode(encoders)
-        X_syn, _ = X_syn.encode(encoders)
+            # now we encode the data
+            X_gt, _ = X_gt.encode(encoders)
+            X_syn, _ = X_syn.encode(encoders)
 
-        if X_train:
-            X_train, _ = X_train.encode(encoders)
-        if X_ref_syn:
-            X_ref_syn, _ = X_ref_syn.encode(encoders)
-        if X_augmented:
-            X_augmented, _ = X_augmented.encode(encoders)
+            if X_train:
+                X_train, _ = X_train.encode(encoders)
+            if X_ref_syn:
+                X_ref_syn, _ = X_ref_syn.encode(encoders)
+            if X_augmented:
+                X_augmented, _ = X_augmented.encode(encoders)
 
-        scores = ScoreEvaluator()
+        with _evaluation_phase(
+            "evaluator_construction",
+            model=model_identifier,
+            role=role_identifier,
+        ):
+            scores = ScoreEvaluator()
 
         def _metric_instance(metric):
             metric_args = {
@@ -538,34 +661,54 @@ class Metrics:
             return metric(**metric_args)
 
         eval_cnt = min(len(X_gt), len(X_syn))
-        for metric in standard_metrics:
-            if metric.type() not in metrics:
-                continue
-            if metric.name() not in metrics[metric.type()]:
-                continue
-            if X_augmented and "augmentation" in metric.name():
-                scores.queue(
-                    _metric_instance(metric),
-                    X_gt,
-                    X_augmented,
-                )
-            elif "DomiasMIA" in metric.name():
-                scores.queue(
-                    _metric_instance(metric),
-                    X_gt,
-                    X_syn,
-                    X_train,
-                    X_ref_syn,
-                    reference_size=resolved_domias_reference_size,
-                )
-            else:
-                scores.queue(
-                    _metric_instance(metric),
-                    X_gt.sample(eval_cnt),
-                    X_syn.sample(eval_cnt),
-                )
+        selected_evaluator_count = sum(
+            metric.type() in metrics and metric.name() in metrics[metric.type()]
+            for metric in standard_metrics
+        )
+        with _evaluation_phase(
+            "evaluator_construction_queue",
+            model=model_identifier,
+            role=role_identifier,
+            evaluator_count=selected_evaluator_count,
+            evaluation_rows=eval_cnt,
+        ):
+            for metric in standard_metrics:
+                if metric.type() not in metrics:
+                    continue
+                if metric.name() not in metrics[metric.type()]:
+                    continue
+                if X_augmented and "augmentation" in metric.name():
+                    scores.queue(
+                        _metric_instance(metric),
+                        X_gt,
+                        X_augmented,
+                    )
+                elif "DomiasMIA" in metric.name():
+                    scores.queue(
+                        _metric_instance(metric),
+                        X_gt,
+                        X_syn,
+                        X_train,
+                        X_ref_syn,
+                        reference_size=resolved_domias_reference_size,
+                    )
+                else:
+                    scores.queue(
+                        _metric_instance(metric),
+                        X_gt.sample(eval_cnt),
+                        X_syn.sample(eval_cnt),
+                    )
 
-        scores.compute()
+        with _evaluation_phase(
+            "score_compute_entry",
+            model=model_identifier,
+            role=role_identifier,
+            evaluator_count=selected_evaluator_count,
+            evaluation_rows=eval_cnt,
+        ):
+            scores.compute(
+                progress_callback=progress_callback, model_name=progress_model
+            )
 
         report = scores.to_dataframe()
         report.attrs["group_mode"] = group_mode

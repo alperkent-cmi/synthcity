@@ -1,4 +1,5 @@
 # third party
+import logging
 import numpy as np
 import pandas as pd
 import pytest
@@ -9,6 +10,7 @@ from torch.utils.data import TensorDataset
 # synthcity absolute
 from synthcity.benchmark.utils import augment_data
 from synthcity.metrics import Metrics, WeightedMetrics
+from synthcity.metrics import eval as eval_module
 from synthcity.metrics.eval_detection import _detection_cv_splits
 from synthcity.plugins import Plugins
 from synthcity.plugins.core.dataloader import (
@@ -18,6 +20,94 @@ from synthcity.plugins.core.dataloader import (
     TimeSeriesDataLoader,
     TimeSeriesSurvivalDataLoader,
 )
+
+
+@pytest.mark.parametrize(
+    ("phase", "failure_point"),
+    [
+        ("group_task_checks", "group_task_checks"),
+        ("loader_validation_conversion", "loader_conversion"),
+        ("group_loader_metadata_resolution", "group_loader_metadata_resolution"),
+        ("encoder_fit_transform", "encoder_fit_transform"),
+        ("evaluator_construction_queue", "evaluator_construction_queue"),
+        ("score_compute_entry", "score_compute_entry"),
+    ],
+)
+def test_metrics_pre_callback_failures_log_safe_phase(
+    monkeypatch, caplog, tmp_path, phase: str, failure_point: str
+) -> None:
+    from synthcity.metrics.eval_sanity import CommonRowsProportion
+    from synthcity.plugins.core.dataloader import GenericDataLoader
+
+    sensitive_literal = "patient/HMAC_private-marker"
+    exception_message = f"unknown category {sensitive_literal}; /private/traceback.py:7"
+
+    def fail_with_sensitive_detail(*_args, **_kwargs):
+        raise ValueError(exception_message)
+
+    evidence = pd.DataFrame({"feature": [0, 1], "target": [0, 1]})
+    synthetic = evidence.copy()
+    train = evidence.copy()
+    metric_kwargs = {}
+    if failure_point == "group_task_checks":
+        metric_kwargs["task_type"] = f"unsupported-{sensitive_literal}"
+    elif failure_point == "loader_conversion":
+        monkeypatch.setattr(GenericDataLoader, "__init__", fail_with_sensitive_detail)
+    elif failure_point == "group_loader_metadata_resolution":
+        evidence = GenericDataLoader(evidence)
+        synthetic = GenericDataLoader(synthetic)
+        train = GenericDataLoader(train)
+        monkeypatch.setattr(
+            GenericDataLoader,
+            "group_ids",
+            property(fail_with_sensitive_detail),
+            raising=False,
+        )
+    elif failure_point == "encoder_fit_transform":
+        evidence = pd.DataFrame(
+            {"category": [sensitive_literal, "known"], "target": [0, 1]}
+        )
+        synthetic = pd.DataFrame({"category": ["known", "known"], "target": [0, 1]})
+        train = synthetic.copy()
+    elif failure_point == "evaluator_construction_queue":
+        monkeypatch.setattr(
+            CommonRowsProportion, "__init__", fail_with_sensitive_detail
+        )
+    else:
+        monkeypatch.setattr(
+            eval_module.ScoreEvaluator, "compute", fail_with_sensitive_detail
+        )
+
+    callbacks = []
+    caplog.set_level(logging.DEBUG)
+    with pytest.raises(ValueError):
+        Metrics.evaluate(
+            evidence,
+            synthetic,
+            train,
+            metrics={"sanity": ["common_rows_proportion"]},
+            workspace=tmp_path,
+            use_cache=False,
+            progress_model="model-debug-test",
+            progress_role="tuning",
+            progress_callback=callbacks.append,
+            **metric_kwargs,
+        )
+
+    output = caplog.text
+    assert f"phase start model=model-debug-test role=tuning phase={phase}" in output
+    assert f"phase failed model=model-debug-test role=tuning phase={phase}" in output
+    start_markers = [
+        line
+        for line in output.splitlines()
+        if "phase start model=model-debug-test role=tuning phase=" in line
+    ]
+    assert start_markers[-1].split("phase=")[-1].split()[0] == phase
+    assert "exception_type=ValueError reason_code=phase_failed" in output
+    assert exception_message not in output
+    assert sensitive_literal not in output
+    assert "/private/traceback.py" not in output
+    assert callbacks == []
 
 
 @pytest.mark.parametrize("test_plugin", ["dummy_sampler", "marginal_distributions"])

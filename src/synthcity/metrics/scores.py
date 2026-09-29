@@ -1,7 +1,8 @@
 # stdlib
 import math
+import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from numbers import Real
 from typing import Any, Dict, Optional, Tuple
 
@@ -42,9 +43,39 @@ def _safe_evaluate(
     log.debug(f" >> Evaluating metric {evaluator.fqdn()} done. Duration: {duration} s")
 
     if err is not None:
-        log.error(f" >> Evaluator {evaluator.fqdn()} failed: {err}")
+        log.error(
+            " >> Evaluator {} failed; exception_type={}",
+            evaluator.fqdn(),
+            error_type,
+        )
 
     return evaluator.fqdn(), result, failed, duration, evaluator.direction(), err, error_type
+
+
+def _safe_diagnostic_classification(error_type: Optional[str]) -> str:
+    """Classify failures from exception type only; never expose exception text."""
+    return {
+        "ValueError": "value_error",
+        "TypeError": "type_error",
+        "RuntimeError": "runtime_error",
+    }.get(error_type or "", "metric_evaluation_failed")
+
+
+def _emit_progress_safely(
+    progress_callback: Callable[[dict[str, Any]], None],
+    event: dict[str, Any],
+) -> None:
+    """Keep optional telemetry failures from changing metric evaluation."""
+    try:
+        progress_callback(event)
+    except Exception as exc:  # noqa: BLE001 - callback errors must not interrupt evaluation
+        log.error(
+            " >> Progress callback failed; model={} evaluator={} event={} exception_type={}",
+            event.get("model", "unknown"),
+            event.get("evaluator", "unknown"),
+            event.get("event", "unknown"),
+            type(exc).__name__,
+        )
 
 
 class ScoreEvaluator:
@@ -173,7 +204,11 @@ class ScoreEvaluator:
     ) -> None:
         self.pending_tasks.append((evaluator, args, kwargs))
 
-    def compute(self) -> None:
+    def compute(
+        self,
+        progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
+        model_name: Optional[str] = None,
+    ) -> None:
         # Metrics previously ran via `joblib.Parallel(n_jobs=1)`, which is
         # sequential in this process anyway -- iterate directly (instead of
         # hiding the loop inside joblib's generator dispatch) so a tqdm bar
@@ -181,13 +216,50 @@ class ScoreEvaluator:
         # no way to tell a merely-slow metric (e.g. DomiasMIA*, which can
         # take minutes) from a genuinely hung one. Mirrors the per-metric
         # progress bar added to the syntheval fork (`SynthEval.evaluate()`).
-        pbar = tqdm(self.pending_tasks, desc="synthcity metrics", unit="metric")
+        model_context = model_name if model_name is not None else "unknown"
+        interactive_progress = sys.stderr.isatty()
+        pbar = tqdm(
+            self.pending_tasks,
+            desc=f"synthcity metrics model={model_context}",
+            unit="metric",
+            disable=not interactive_progress,
+        )
         results = []
         for evaluator, args, kwargs in pbar:
-            pbar.set_postfix_str(evaluator.fqdn(), refresh=True)
+            started_at = time.time()
+            evaluator_name = evaluator.fqdn()
+            pbar.set_postfix_str(f"{model_context}: {evaluator_name}", refresh=True)
+            if progress_callback is not None:
+                _emit_progress_safely(
+                    progress_callback,
+                    {
+                        "event": "start",
+                        "model": model_context,
+                        "evaluator": evaluator_name,
+                        "started_at": started_at,
+                    },
+                )
             key, result, failed, duration, direction, err, error_type = _safe_evaluate(
                 evaluator, *args, **kwargs
             )
+            status = "failed" if failed else "completed"
+            if progress_callback is not None:
+                _emit_progress_safely(
+                    progress_callback,
+                    {
+                        "event": status,
+                        "model": model_context,
+                        "evaluator": evaluator_name,
+                        "started_at": started_at,
+                        "ended_at": time.time(),
+                        "elapsed_seconds": duration,
+                        "outcome": status,
+                        "exception_type": error_type,
+                        "diagnostic_classification": (
+                            _safe_diagnostic_classification(error_type) if failed else None
+                        ),
+                    },
+                )
             metadata_getter = getattr(evaluator, "result_metadata", None)
             if callable(metadata_getter):
                 metadata = metadata_getter()
@@ -195,7 +267,9 @@ class ScoreEvaluator:
                     self.add_result_metadata({key: metadata})
             if failed:
                 pbar.write(
-                    f"[synthcity] '{key}' failed after {duration:.1f}s: {err}"
+                    f"[synthcity] model={model_context} evaluator='{key}' "
+                    f"failed after {duration:.1f}s; "
+                    f"exception_type={error_type}"
                 )
             results.append((key, result, failed, duration, direction, err, error_type))
         self.pending_tasks = []
@@ -210,6 +284,7 @@ class ScoreEvaluator:
                 error=err,
                 error_type=error_type,
             )
+
 
     def to_dataframe(self) -> pd.DataFrame:
         output_metrics = [

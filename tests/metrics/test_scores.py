@@ -1,8 +1,8 @@
 import warnings
+from io import StringIO
 
 import numpy as np
 import pytest
-
 from synthcity.metrics.scores import ScoreEvaluator
 
 
@@ -195,6 +195,158 @@ def test_metric_exception_is_materialized_as_typed_failure():
     assert report.loc["stats.failing_metric", "errors"] == 1
     assert report.loc["stats.failing_metric", "error_types"] == "RuntimeError"
     assert report.loc["stats.failing_metric", "error_messages"] == "metric exploded"
+
+
+def test_compute_emits_model_attributed_metric_start_and_completion(monkeypatch):
+    from synthcity.metrics import scores as scores_module
+
+    class TTYStream(StringIO):
+        def isatty(self):
+            return True
+
+    class SuccessfulMetric:
+        @staticmethod
+        def fqdn():
+            return "stats.successful_metric"
+
+        @staticmethod
+        def direction():
+            return "maximize"
+
+        @staticmethod
+        def evaluate():
+            return {"score": 0.75}
+
+    stream = TTYStream()
+    monkeypatch.setattr(scores_module.sys, "stderr", stream)
+    events = []
+    scores = ScoreEvaluator()
+    scores.queue(SuccessfulMetric())
+
+    scores.compute(progress_callback=events.append, model_name="model_alpha")
+    report = scores.to_dataframe()
+
+    assert [event["event"] for event in events] == ["start", "completed"]
+    assert all(event["model"] == "model_alpha" for event in events)
+    assert all(event["evaluator"] == "stats.successful_metric" for event in events)
+    assert events[1]["outcome"] == "completed"
+    assert events[1]["elapsed_seconds"] >= 0
+    assert events[0]["started_at"] <= events[1]["ended_at"]
+    assert "model=model_alpha" in stream.getvalue()
+    assert "stats.successful_metric" in stream.getvalue()
+    assert report.loc["stats.successful_metric.score", "mean"] == pytest.approx(0.75)
+
+
+def test_compute_failure_callback_is_safe_and_preserves_failure_evidence():
+    class FailingMetric:
+        @staticmethod
+        def fqdn():
+            return "stats.failing_metric"
+
+        @staticmethod
+        def direction():
+            return "minimize"
+
+        @staticmethod
+        def evaluate():
+            raise ValueError("unknown category patient-secret")
+
+    events = []
+    scores = ScoreEvaluator()
+    scores.queue(FailingMetric())
+
+    scores.compute(progress_callback=events.append, model_name="model_beta")
+    report = scores.to_dataframe()
+
+    assert [event["event"] for event in events] == ["start", "failed"]
+    assert events[1]["model"] == "model_beta"
+    assert events[1]["evaluator"] == "stats.failing_metric"
+    assert events[1]["outcome"] == "failed"
+    assert events[1]["elapsed_seconds"] >= 0
+    assert events[1]["exception_type"] == "ValueError"
+    assert events[1]["diagnostic_classification"] == "value_error"
+    assert "patient-secret" not in repr(events)
+    assert report.loc["stats.failing_metric", "errors"] == 1
+    assert report.loc["stats.failing_metric", "error_types"] == "ValueError"
+    assert report.loc["stats.failing_metric", "error_messages"] == (
+        "unknown category patient-secret"
+    )
+
+
+@pytest.mark.parametrize(
+    ("metric_fails", "callback_failure_event"),
+    [
+        (False, "start"),
+        (False, "completed"),
+        (True, "start"),
+        (True, "failed"),
+    ],
+)
+def test_callback_failure_does_not_change_metric_result(
+    monkeypatch, metric_fails, callback_failure_event
+):
+    from synthcity.metrics import scores as scores_module
+
+    callback_events = []
+    callback_failures = []
+    evaluations = []
+
+    def record_callback_failure(*args):
+        callback_failures.append(args)
+
+    monkeypatch.setattr(scores_module.log, "error", record_callback_failure)
+
+    class ControlledMetric:
+        @staticmethod
+        def fqdn():
+            return "stats.controlled_metric"
+
+        @staticmethod
+        def direction():
+            return "maximize"
+
+        @staticmethod
+        def evaluate():
+            evaluations.append("called")
+            if metric_fails:
+                raise RuntimeError("private metric detail")
+            return {"score": 0.75}
+
+    def raising_callback(event):
+        callback_events.append(event["event"])
+        if event["event"] == callback_failure_event:
+            raise ValueError("private callback detail")
+
+    scores = ScoreEvaluator()
+    scores.queue(ControlledMetric())
+    scores.compute(progress_callback=raising_callback, model_name="model_gamma")
+    report = scores.to_dataframe()
+
+    assert evaluations == ["called"]
+    assert callback_events == ["start", "failed" if metric_fails else "completed"]
+    progress_failures = [
+        failure for failure in callback_failures if "Progress callback failed" in failure[0]
+    ]
+    assert len(progress_failures) == 1
+    message, *arguments = progress_failures[0]
+    assert "exception_type={}" in message
+    assert arguments == [
+        "model_gamma",
+        "stats.controlled_metric",
+        callback_failure_event,
+        "ValueError",
+    ]
+    assert "private callback detail" not in repr(progress_failures)
+
+    if metric_fails:
+        assert list(report.index) == ["stats.controlled_metric"]
+        assert report.loc["stats.controlled_metric", "errors"] == 1
+        assert report.loc["stats.controlled_metric", "error_types"] == "RuntimeError"
+        assert report.loc["stats.controlled_metric", "error_messages"] == "private metric detail"
+    else:
+        assert list(report.index) == ["stats.controlled_metric.score"]
+        assert report.loc["stats.controlled_metric.score", "mean"] == pytest.approx(0.75)
+        assert report.loc["stats.controlled_metric.score", "errors"] == 0
 
 
 def test_repeated_seed_metadata_preserves_protocols_and_stddev():
