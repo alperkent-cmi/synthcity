@@ -19,7 +19,7 @@ def _repository_root() -> Path:
     synthdata_roots = [
         candidate.resolve()
         for candidate in candidates
-        if (candidate.resolve() / "AGENTS.md").is_file()
+        if (candidate.resolve() / "synthdata" / "__init__.py").is_file()
         and (candidate.resolve() / "pyproject.toml").is_file()
     ]
     if synthdata_roots:
@@ -39,7 +39,7 @@ REPOSITORY_ROOT = _repository_root()
 
 def _reject_symlink_components(path: Path) -> None:
     """Reject scratch path components that could redirect pytest outside checkout."""
-    current = path.anchor and Path(path.anchor) or Path()
+    current = Path(path.anchor) if path.is_absolute() else Path()
     for component in path.parts[1:] if path.is_absolute() else path.parts:
         current /= component
         if current.is_symlink():
