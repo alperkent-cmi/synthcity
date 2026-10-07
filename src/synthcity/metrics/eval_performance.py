@@ -6,7 +6,6 @@ from typing import Any, Dict, List, Tuple
 # third party
 import numpy as np
 import pandas as pd
-import shap
 import torch
 from pydantic import validate_arguments
 from scipy.stats import kendalltau, spearmanr
@@ -14,7 +13,7 @@ from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.metrics import r2_score
 from sklearn.model_selection import KFold, StratifiedKFold
 from sklearn.preprocessing import LabelEncoder
-from xgboost import XGBClassifier, XGBRegressor
+from xgboost import DMatrix, XGBClassifier, XGBRegressor
 
 # synthcity absolute
 import synthcity.logger as log
@@ -961,6 +960,22 @@ class AugmentationPerformanceEvaluatorMLP(PerformanceEvaluatorMLP):
 
 
 # TODO: investigate if this metric is relevant or not.
+def _mean_abs_tree_shap(model: Any, X: pd.DataFrame) -> np.ndarray:
+    """Mean |SHAP value| per (output, feature) of a fitted XGBoost model on X.
+
+    Uses XGBoost's own TreeSHAP (``pred_contribs``) rather than
+    ``shap.TreeExplainer``, which cannot parse the base_score that
+    xgboost>=3 stores in its model config. Returns shape
+    (n_classes, n_features) for multiclass models and (1, n_features)
+    otherwise; the bias column is dropped.
+    """
+    contribs = model.get_booster().predict(DMatrix(X), pred_contribs=True)
+    contribs = contribs[..., :-1]
+    if contribs.ndim == 2:
+        contribs = contribs[:, None, :]
+    return np.mean(np.abs(contribs), axis=0)
+
+
 class FeatureImportanceRankDistance(MetricEvaluator):
     """
     .. inheritance-diagram:: synthcity.metrics.eval_performance.FeatureImportanceRankDistance
@@ -976,6 +991,10 @@ class FeatureImportanceRankDistance(MetricEvaluator):
         close to 1: similar performance
         close to 0: unrelated
         close to -1: the ranks have different monotony.
+
+    Importances are mean |SHAP| values on the real held-out rows, per class
+    for classifiers, and the score is the rank correlation between the two
+    models' importances, so higher is better.
     """
 
     def __init__(self, distance: str = "kendall", **kwargs: Any) -> None:
@@ -992,7 +1011,7 @@ class FeatureImportanceRankDistance(MetricEvaluator):
 
     @staticmethod
     def direction() -> str:
-        return "minimize"
+        return "maximize"
 
     @staticmethod
     def name() -> str:
@@ -1067,7 +1086,7 @@ class FeatureImportanceRankDistance(MetricEvaluator):
                 tree_method="approx",
                 n_jobs=2,
                 verbosity=0,
-                depth=3,
+                max_depth=3,
                 random_state=self._random_state,
             )
 
@@ -1075,23 +1094,18 @@ class FeatureImportanceRankDistance(MetricEvaluator):
             ood_X_gt, ood_y_gt = X_gt.test().unpack()
             iter_X_syn, iter_y_syn = X_syn.unpack()
 
-            syn_shap = np.random.rand(
-                len(np.unique(id_y_gt)), ood_X_gt.shape[0], ood_X_gt.shape[1]
-            )
-            try:
-                syn_model = copy.deepcopy(model).fit(iter_X_syn, iter_y_syn)
-                syn_explainer = shap.TreeExplainer(syn_model)
-                syn_shap = syn_explainer.shap_values(ood_X_gt)
-            except BaseException:
-                pass
-
+            syn_model = copy.deepcopy(model).fit(iter_X_syn, iter_y_syn)
             gt_model = copy.deepcopy(model).fit(id_X_gt, id_y_gt)
-            gt_explainer = shap.TreeExplainer(gt_model)
-            gt_shap = gt_explainer.shap_values(ood_X_gt)
 
             # evaluate absolute influence for each class
-            syn_xai = np.mean(np.abs(syn_shap), axis=1)  # classes x n_features
-            gt_xai = np.mean(np.abs(gt_shap), axis=1)  # classes x n_features
+            syn_xai = _mean_abs_tree_shap(syn_model, ood_X_gt)  # classes x n_features
+            gt_xai = _mean_abs_tree_shap(gt_model, ood_X_gt)  # classes x n_features
+            if syn_xai.shape != gt_xai.shape:
+                raise RuntimeError(
+                    f"Synthetic and real models explain {syn_xai.shape[0]} and "
+                    f"{gt_xai.shape[0]} classes"
+                )
+            syn_xai, gt_xai = syn_xai.ravel(), gt_xai.ravel()
 
             corr, pvalue = self.distance(syn_xai, gt_xai)
             corr = np.mean(np.nan_to_num(corr))
@@ -1106,27 +1120,18 @@ class FeatureImportanceRankDistance(MetricEvaluator):
             model = XGBRegressor(
                 n_jobs=2,
                 verbosity=0,
-                depth=3,
+                max_depth=3,
                 random_state=self._random_state,
             )
             id_X_gt, id_y_gt = X_gt.train().unpack()
             ood_X_gt, ood_y_gt = X_gt.test().unpack()
             iter_X_syn, iter_y_syn = X_syn.unpack()
 
-            syn_shap = np.random.rand(*ood_X_gt.shape)
-            try:
-                syn_model = copy.deepcopy(model).fit(iter_X_syn, iter_y_syn)
-                syn_explainer = shap.TreeExplainer(syn_model)
-                syn_shap = syn_explainer.shap_values(ood_X_gt)
-            except BaseException:
-                pass
-
+            syn_model = copy.deepcopy(model).fit(iter_X_syn, iter_y_syn)
             gt_model = copy.deepcopy(model).fit(id_X_gt, id_y_gt)
-            gt_explainer = shap.TreeExplainer(gt_model)
-            gt_shap = gt_explainer.shap_values(ood_X_gt)
 
-            syn_xai = np.mean(np.abs(syn_shap), axis=0)  # [n_features]
-            gt_xai = np.mean(np.abs(gt_shap), axis=0)  # [n_features]
+            syn_xai = _mean_abs_tree_shap(syn_model, ood_X_gt).ravel()  # [n_features]
+            gt_xai = _mean_abs_tree_shap(gt_model, ood_X_gt).ravel()  # [n_features]
 
             corr, pvalue = self.distance(syn_xai, gt_xai)
             corr = np.mean(np.nan_to_num(corr))

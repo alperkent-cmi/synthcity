@@ -494,3 +494,26 @@ def test_image_support_perf() -> None:
         for k in score:
             assert score[k] >= 0
             assert not np.isnan(score[k])
+
+
+@pytest.mark.parametrize("n_classes", [2, 3])
+def test_feature_importance_rank_dist_known_answers(n_classes: int) -> None:
+    # Real data: the target depends only on f0, weakly on f1.
+    rng = np.random.default_rng(0)
+    X = pd.DataFrame(rng.normal(size=(600, 4)), columns=["f0", "f1", "f2", "f3"])
+    signal = 3 * X["f0"] + 0.5 * X["f1"]
+    X["target"] = pd.qcut(signal, n_classes, labels=False)
+    Xloader = GenericDataLoader(X, target_column="target", random_state=0)
+
+    evaluator = FeatureImportanceRankDistance(distance="kendall", use_cache=False)
+    assert evaluator.direction() == "maximize"
+
+    same = evaluator.evaluate(Xloader, Xloader.train())
+    assert same["corr"] == pytest.approx(1.0)
+
+    # Synthetic data whose target depends on f3 instead.
+    swapped = X.copy()
+    swapped[["f0", "f3"]] = X[["f3", "f0"]].to_numpy()
+    swapped_loader = GenericDataLoader(swapped, target_column="target")
+    other = evaluator.evaluate(Xloader, swapped_loader)
+    assert other["corr"] < 0.5
