@@ -61,7 +61,12 @@ def get_frequency(
 
         if gt.keys() != synth.keys():
             raise ValueError(f"Invalid features. {gt.keys()}. syn = {synth.keys()}")
-        res[col] = (list(gt.values()), list(synth.values()))
+        # Pair the two tables by category, not by insertion order: each dict
+        # was built in its own value_counts (frequency) order, so zipping the
+        # values would compare a category's real share with another
+        # category's synthetic share.
+        keys = list(gt.keys())
+        res[col] = ([gt[k] for k in keys], [synth[k] for k in keys])
 
     return res
 
