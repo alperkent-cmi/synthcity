@@ -173,10 +173,20 @@ class ChiSquaredTest(StatisticalEvaluator):
             X_gt.dataframe(), X_syn.dataframe(), n_histogram_bins=self._n_histogram_bins
         )
 
+        n_gt = len(X_gt)
         for col in X_gt.columns:
             gt_freq, synth_freq = freqs[col]
             try:
-                _, pvalue = chisquare(gt_freq, synth_freq)
+                # Pearson's test compares observed counts with expected counts
+                # (Pearson 1900): the real column's counts against the counts
+                # the synthetic proportions predict for the same sample size.
+                # On proportions the statistic shrinks by a factor of n and
+                # the p-value is near 1 for any pair of distributions.
+                observed = np.asarray(gt_freq, dtype=float)
+                expected = np.asarray(synth_freq, dtype=float)
+                observed = observed / observed.sum() * n_gt
+                expected = expected / expected.sum() * n_gt
+                _, pvalue = chisquare(observed, expected)
                 if np.isnan(pvalue):
                     pvalue = 0
             except BaseException:
