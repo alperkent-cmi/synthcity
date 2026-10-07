@@ -632,9 +632,15 @@ class AlphaPrecision(StatisticalEvaluator):
             alpha_precision_curve.append(alpha_precision)
             beta_coverage_curve.append(beta_coverage)
 
-        # See which one is bigger
-
-        authen = real_to_real[real_to_synth_args] < real_to_synth
+        # Authenticity (Alaa et al. 2022, Sec. 3.3): a synthetic sample is
+        # unauthentic when it is closer to its nearest real record than that
+        # record is to its own nearest real neighbour. Upstream indexed the
+        # real radii with synthetic-row indices and averaged over real rows,
+        # so a generator collapsed onto one real record still scored ~0.7.
+        synth_to_real, synth_to_real_args = nbrs_real.kneighbors(X_syn, n_neighbors=1)
+        authen = real_to_real[synth_to_real_args.squeeze(axis=1)] < synth_to_real.squeeze(
+            axis=1
+        )
         authenticity = np.mean(authen)
 
         Delta_precision_alpha = 1 - np.sum(
