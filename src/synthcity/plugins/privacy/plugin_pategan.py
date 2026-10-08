@@ -65,11 +65,17 @@ class Teachers(Serializable):
             }
 
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
-    def fit(self, X: np.ndarray, generator: Any) -> Any:
+    def fit(
+        self, X: np.ndarray, generator: Any, partition: Optional[np.ndarray] = None
+    ) -> Any:
         # 1. train teacher models
         self.teacher_models: list = []
 
-        permutations = np.random.permutation(len(X))
+        # PATE needs each teacher to see a fixed, disjoint subset of the rows
+        # for the whole run; the caller passes one partition for every iteration.
+        permutations = (
+            np.random.permutation(len(X)) if partition is None else partition
+        )
 
         for tidx in range(self.n_teachers):
             teacher_idx = permutations[
@@ -196,7 +202,7 @@ class PATEGAN(Serializable):
         self.n_teachers = n_teachers
         self.teacher_template = teacher_template
         self.epsilon = epsilon
-        self.delta = None
+        self.delta = delta
         self.lamda = lamda
         self.alpha = alpha
         self.encoder_max_clusters = encoder_max_clusters
@@ -249,6 +255,7 @@ class PATEGAN(Serializable):
         )
         X_train_enc = self.model.encode(X_train)
         self.samples_per_teacher = int(len(X_train_enc) / self.n_teachers)
+        partition = np.random.permutation(len(X_train_enc))
 
         # alpha initialize
         self.alpha_dict = np.zeros([self.alpha])
@@ -272,7 +279,7 @@ class PATEGAN(Serializable):
                 lamda=self.lamda,
                 template=self.teacher_template,
             )
-            teachers.fit(np.asarray(X_train_enc), self.model)
+            teachers.fit(np.asarray(X_train_enc), self.model, partition=partition)
 
             log.debug(f"[pategan it {it}] 2. GAN training")
 
@@ -284,10 +291,8 @@ class PATEGAN(Serializable):
                 X_batch = pd.DataFrame(X.detach().cpu().numpy())
 
                 n0_mb, n1_mb, Y_mb = teachers.pate_lamda(np.asarray(X_batch))
-                if np.sum(Y_mb) >= len(X) / 2:
-                    return torch.zeros((len(X),))
 
-                # Compute alpha
+                # Every teacher query spends privacy budget (Algorithm 1).
                 self._update_alpha(n0_mb, n1_mb)
 
                 # PATE labels for X
@@ -329,7 +334,7 @@ class PATEGAN(Serializable):
         for lidx in range(self.alpha):
             upper = 2 * self.lamda**2 * (lidx + 1) * (lidx + 2)
             t = (1 - q) * np.power((1 - q) / (1 - np.exp(2 * self.lamda) * q), lidx + 1)
-            t = np.log(t + q * np.exp(2 * self.lamda * lidx + 1))
+            t = np.log(t + q * np.exp(2 * self.lamda * (lidx + 1)))
             self.alpha_dict[lidx] += np.clip(t, a_min=0, a_max=upper).sum()
         return self.alpha_dict
 
