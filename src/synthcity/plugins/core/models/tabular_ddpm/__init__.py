@@ -120,7 +120,8 @@ class TabDDPM(nn.Module, ValidationMixin):
             ),
         )
 
-        self.dataloader = DataLoader(dataset, batch_size=self.batch_size)
+        # Shuffled each epoch, as in the reference training loop.
+        self.dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
 
         self.diffusion = GaussianMultinomialDiffusion(
             model_type=self.model_type,

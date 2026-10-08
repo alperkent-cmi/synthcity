@@ -17,6 +17,7 @@ from pydantic import validate_arguments
 from synthcity.metrics.weighted_metrics import WeightedMetrics
 from synthcity.plugins.core.dataloader import DataLoader
 from synthcity.plugins.core.distribution import (
+    CategoricalDistribution,
     Distribution,
     IntegerDistribution,
     IntLogDistribution,
@@ -184,9 +185,11 @@ class TabDDPMPlugin(Plugin):
         Gaussian diffusion loss MSE
         """
         return [
-            LogDistribution(name="lr", low=1e-5, high=1e-1),
-            IntLogDistribution(name="batch_size", low=256, high=4096),
-            IntegerDistribution(name="num_timesteps", low=10, high=1000),
+            # Kotelnikov et al. 2023, Table 5. Learning rates of 0.05-0.1 (the
+            # old upper bound was 0.1) make sampling fail with NaNs.
+            LogDistribution(name="lr", low=1e-5, high=3e-3),
+            CategoricalDistribution(name="batch_size", choices=[256, 4096]),
+            CategoricalDistribution(name="num_timesteps", choices=[100, 1000]),
             IntLogDistribution(name="n_iter", low=1000, high=10000),
             # IntegerDistribution(name="n_layers_hidden", low=2, high=8),
             # IntLogDistribution(name="dim_hidden", low=128, high=1024),
@@ -214,9 +217,14 @@ class TabDDPMPlugin(Plugin):
                     "cond is already given by the labels for classification"
                 )
             df, cond = X.unpack()
-            self._labels, self._cond_dist = np.unique(cond, return_counts=True)
+            self._labels, codes, self._cond_dist = np.unique(
+                cond, return_inverse=True, return_counts=True
+            )
             self._cond_dist = self._cond_dist / self._cond_dist.sum()
             self.target_name = cond.name
+            # The denoiser embeds the label as an index, so condition on codes
+            # 0..K-1 rather than the raw label values.
+            cond = pd.Series(codes, index=cond.index, name=cond.name)
 
         df = self.encoder.fit_transform(df)
 
@@ -236,18 +244,24 @@ class TabDDPMPlugin(Plugin):
     def _generate(self, count: int, syn_schema: Schema, **kwargs: Any) -> DataLoader:
         cond = kwargs.pop("cond", None)
 
-        if self.is_classification and cond is None:
-            # randomly generate labels following the distribution of the training data
-            cond = np.random.choice(self._labels, size=count, p=self._cond_dist)
-
         if cond is not None and len(cond) > count:
             raise ValueError("The length of cond is less than the required count")
 
+        if self.is_classification and cond is not None:
+            cond = np.searchsorted(self._labels, np.asarray(cond))
+
         def callback(count):  # type: ignore
-            df = self.model.generate(count, cond=cond)
+            codes = cond
+            if self.is_classification and codes is None:
+                # Draw fresh labels from the training distribution on every
+                # call, so each retry of _safe_generate gets its own labels.
+                codes = np.random.choice(
+                    len(self._labels), size=count, p=self._cond_dist
+                )
+            df = self.model.generate(count, cond=codes)
             df = self.encoder.inverse_transform(df)
             if self.is_classification:
-                df = df.join(pd.Series(cond, name=self.target_name))
+                df = df.join(pd.Series(self._labels[codes], name=self.target_name))
             return df
 
         return self._safe_generate(callback, count, syn_schema, **kwargs)
