@@ -1,4 +1,5 @@
 # stdlib
+import os
 import platform
 from abc import ABCMeta, abstractmethod
 from pathlib import Path
@@ -118,14 +119,22 @@ class MetricEvaluator(metaclass=ABCMeta):
         if cache_file.exists() and self._use_cache:
             return load_from_file(cache_file)
 
-        model = OneClassLayer(
-            input_dim=X_gt.shape[1],
-            rep_dim=X_gt.shape[1],
-            center=torch.ones(X_gt.shape[1]) * 10,
-        )
-        model.fit(X_gt)
+        # Seeded, so the embedding is the same whichever model or process fits
+        # it first (the cache below is keyed by the real data only).
+        with torch.random.fork_rng():
+            torch.manual_seed(self._random_state)
+            model = OneClassLayer(
+                input_dim=X_gt.shape[1],
+                rep_dim=X_gt.shape[1],
+                center=torch.ones(X_gt.shape[1]) * 10,
+            )
+            model.fit(X_gt)
 
-        save_to_file(cache_file, model)
+        # Write then rename: parallel evaluations share the workspace, and a
+        # reader must never load a half-written file.
+        partial = cache_file.with_name(f"{cache_file.name}.{os.getpid()}.tmp")
+        save_to_file(partial, model)
+        os.replace(partial, cache_file)
 
         return model.to(DEVICE)
 
