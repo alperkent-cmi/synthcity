@@ -60,6 +60,10 @@ class TabDDPMPlugin(Plugin):
             Type of diffusion model to use ("mlp", "resnet", or "tabnet").
         model_params: dict = dict(n_layers_hidden=3, n_units_hidden=256, dropout=0.0)
             Parameters of the diffusion model. Should be different for different model types.
+        n_layers_hidden: Optional[int] = None
+            MLP depth; overrides model_params (searched by hyperparameter_space).
+        n_units_hidden: Optional[int] = None
+            MLP width; overrides model_params (searched by hyperparameter_space).
         device: Any = DEVICE
             Device to use for training.
         callbacks: Sequence[Callback] = ()
@@ -107,6 +111,8 @@ class TabDDPMPlugin(Plugin):
         log_interval: int = 100,
         model_type: str = "mlp",
         model_params: dict = {},
+        n_layers_hidden: Optional[int] = None,
+        n_units_hidden: Optional[int] = None,
         dim_embed: int = 128,
         continuous_encoder: str = "quantile",
         cont_encoder_params: dict = {},
@@ -130,6 +136,20 @@ class TabDDPMPlugin(Plugin):
 
         self.is_classification = is_classification
 
+        # The searched MLP size (TabDDPM's d_layers) overrides model_params.
+        model_params = model_params.copy()
+        if n_layers_hidden is not None or n_units_hidden is not None:
+            model_params = {
+                "n_layers_hidden": 3,
+                "n_units_hidden": 256,
+                "dropout": 0.0,
+                **model_params,
+            }
+            if n_layers_hidden is not None:
+                model_params["n_layers_hidden"] = n_layers_hidden
+            if n_units_hidden is not None:
+                model_params["n_units_hidden"] = n_units_hidden
+
         self.model = TabDDPM(
             n_iter=n_iter,
             lr=lr,
@@ -143,7 +163,7 @@ class TabDDPMPlugin(Plugin):
             callbacks=callbacks,
             log_interval=log_interval,
             model_type=model_type,
-            model_params=model_params.copy(),
+            model_params=model_params,
             dim_embed=dim_embed,
             valid_size=validation_size,
             valid_metric=validation_metric,
@@ -191,8 +211,10 @@ class TabDDPMPlugin(Plugin):
             CategoricalDistribution(name="batch_size", choices=[256, 4096]),
             CategoricalDistribution(name="num_timesteps", choices=[100, 1000]),
             IntLogDistribution(name="n_iter", low=1000, high=10000),
-            # IntegerDistribution(name="n_layers_hidden", low=2, high=8),
-            # IntLogDistribution(name="dim_hidden", low=128, high=1024),
+            # The paper searches 2, 4, 6 or 8 layers of 128-1024 units, with
+            # separate first, middle and last widths; the MLP here has one width.
+            CategoricalDistribution(name="n_layers_hidden", choices=[2, 4, 6, 8]),
+            CategoricalDistribution(name="n_units_hidden", choices=[128, 256, 512, 1024]),
         ]
 
     def _fit(self, X: DataLoader, *args: Any, **kwargs: Any) -> "TabDDPMPlugin":

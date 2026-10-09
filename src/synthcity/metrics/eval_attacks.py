@@ -10,6 +10,7 @@ from sklearn.preprocessing import LabelEncoder
 from xgboost import XGBClassifier, XGBRegressor
 
 # synthcity absolute
+from synthcity.utils.dataframe import is_discrete
 from synthcity.metrics.core import MetricEvaluator
 from synthcity.plugins.core.dataloader import DataLoader
 from synthcity.plugins.core.models.mlp import MLP
@@ -64,8 +65,7 @@ class AttackEvaluator(MetricEvaluator):
             target = X_syn[col]
             keys_data = X_syn.drop(columns=[col])
 
-            # TODO: use a common limit for categorical features
-            if len(target.unique()) < 15:
+            if is_discrete(col, target, 14):
                 task_type = "classification"
                 encoder = LabelEncoder()
                 target = encoder.fit_transform(target)

@@ -15,6 +15,7 @@ from sklearn.cluster import KMeans
 from sklearn.neighbors import NearestNeighbors
 
 # synthcity absolute
+from synthcity.utils.dataframe import is_discrete
 import synthcity.logger as log
 from synthcity.metrics import _utils
 from synthcity.plugins.core.dataloader import DataLoader
@@ -480,12 +481,11 @@ class DomiasMIA(PrivacyEvaluator):
 
         all_real_data = np.concatenate((X_train.numpy(), X_gt.numpy()), axis=0)
 
-        continuous = []
-        for i in np.arange(all_real_data.shape[1]):
-            if len(np.unique(all_real_data[:, i])) < 10:
-                continuous.append(0)
-            else:
-                continuous.append(1)
+        all_real_frame = pd.DataFrame(all_real_data, columns=X_train.columns)
+        continuous = [
+            0 if is_discrete(col, all_real_frame[col], 9) else 1
+            for col in all_real_frame.columns
+        ]
 
         self.norm = _utils.normal_func_feat(all_real_data, continuous)
 

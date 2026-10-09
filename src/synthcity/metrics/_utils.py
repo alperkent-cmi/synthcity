@@ -23,6 +23,7 @@ from torch import nn
 from tqdm import tqdm
 
 # synthcity absolute
+from synthcity.utils.dataframe import is_discrete
 from synthcity.logger import logger as log
 from synthcity.plugins.core.models import bnaf
 
@@ -43,7 +44,7 @@ def get_frequency(
     for col in X_gt.columns:
         local_bins = min(n_histogram_bins, len(X_gt[col].unique()))
 
-        if len(X_gt[col].unique()) < 5:  # categorical
+        if is_discrete(col, X_gt[col], 4):  # categorical
             gt = (X_gt[col].value_counts() / len(X_gt)).to_dict()
             synth = (X_synth[col].value_counts() / len(X_synth)).to_dict()
         else:

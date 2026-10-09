@@ -161,17 +161,28 @@ def log_sub_exp(a: Tensor, b: Tensor, epsilon: float = 1e-10) -> Tensor:
     return torch.where(valid, log_result, torch.full_like(log_result, -float("inf")))
 
 
-@torch.jit.script
 def sliced_logsumexp(x: Tensor, slices: Tensor) -> Tensor:
-    lse = torch.logcumsumexp(
-        torch.nn.functional.pad(x, [1, 0, 0, 0], value=-float("inf")), dim=-1
-    )
+    """Log-sum-exp of ``x`` within each slice ``[slices[i], slices[i + 1])``, repeated per column.
 
-    slice_starts = slices[:-1]
-    slice_ends = slices[1:]
-
-    slice_lse = log_sub_exp(lse[:, slice_ends], lse[:, slice_starts])
-    slice_lse_repeated = torch.repeat_interleave(
-        slice_lse, slice_ends - slice_starts, dim=-1
+    The reference implementation (and this port, before) took differences of a
+    log-cumulative-sum over all one-hot columns. In float32 that cancels badly
+    once there are many categorical features: a slice's mass is lost next to the
+    running total, its log-normalizer becomes -inf, and the multinomial loss
+    turns NaN. Here each slice is reduced on its own, which is the same value
+    without the cancellation.
+    """
+    sizes = slices[1:] - slices[:-1]
+    segment = torch.repeat_interleave(
+        torch.arange(len(sizes), device=x.device), sizes
+    ).expand(x.shape[0], -1)
+    empty = torch.full(
+        (x.shape[0], len(sizes)), -float("inf"), dtype=x.dtype, device=x.device
     )
-    return slice_lse_repeated
+    # The shift only stabilises exp(); the result does not depend on it.
+    shift = empty.scatter_reduce(1, segment, x.detach(), reduce="amax")
+    shift = torch.where(torch.isfinite(shift), shift, torch.zeros_like(shift))
+    total = torch.zeros_like(empty).scatter_add(
+        1, segment, torch.exp(x - shift.gather(1, segment))
+    )
+    lse = torch.log(total) + shift
+    return lse.gather(1, segment)

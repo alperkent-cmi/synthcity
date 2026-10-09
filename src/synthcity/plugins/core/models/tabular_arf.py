@@ -18,6 +18,7 @@ Please be aware that arfpy is only available for python >= 3.8.
 """
     )
 # synthcity absolute
+from synthcity.utils.dataframe import is_discrete
 import synthcity.logger as log
 from synthcity.utils.constants import DEVICE
 
@@ -105,11 +106,7 @@ class TabularARF(metaclass=ABCMeta):
         Returns:
             list: The list of categorical columns
         """
-        categorical_cols = []
-        for col in X.columns:
-            if X[col].nunique() <= var_threshold:
-                categorical_cols.append(col)
-        return categorical_cols
+        return [col for col in X.columns if is_discrete(col, X[col], var_threshold)]
 
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
     def fit(
