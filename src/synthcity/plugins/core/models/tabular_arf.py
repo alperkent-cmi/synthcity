@@ -128,14 +128,39 @@ class TabularARF(metaclass=ABCMeta):
             verbose=self.verbose,
             min_node_size=self.min_node_size,
         )
+        # Density estimation (FORDE) depends only on the fitted forest, so it
+        # runs once here instead of on every generate() call: synthcity's
+        # _safe_generate calls generate() again for each batch it tops up.
+        self.model.forde(dist=self.dist, oob=self.oob, alpha=self.alpha)
+        self._bound_edge_leaves(X)
         return self
+
+    def _bound_edge_leaves(self, X: pd.DataFrame) -> None:
+        """Bound edge leaves' truncated normals by the training range.
+
+        arfpy leaves a leaf's bound at -inf/inf where no split limits it, so
+        draws from edge leaves can fall outside the data range and strict
+        sampling drops the whole row; with hundreds of continuous columns
+        almost no row survives. The reference R package offers the same fix
+        as ``forde(finite_bounds = "global")``.
+        """
+        params = getattr(self.model, "params", None)
+        if params is None or len(params) == 0:
+            return
+        numeric = X.select_dtypes(exclude="object")
+        lo = params["variable"].map(numeric.min())
+        hi = params["variable"].map(numeric.max())
+        # A leaf whose values are all equal (sd 0) draws its mean; a finite
+        # bound there would make arfpy's standardised bound 0/0.
+        spread = params["sd"] > 0
+        params["min"] = params["min"].where(~spread | (params["min"] > lo), lo)
+        params["max"] = params["max"].where(~spread | (params["max"] < hi), hi)
 
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
     def generate(
         self,
         count: int,
     ) -> pd.DataFrame:
-        self.model.forde(dist=self.dist, oob=self.oob, alpha=self.alpha)
         try:
             samples = self.model.forge(n=count)
             return pd.DataFrame(samples)
