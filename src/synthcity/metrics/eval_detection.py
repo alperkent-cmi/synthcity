@@ -109,7 +109,13 @@ class DetectionEvaluator(MetricEvaluator):
             score = roc_auc_score(test_labels, test_pred)
             res.append(score)
 
-        results = {self._reduction: float(self.reduction()(res))}
+        # A two-sample classifier test is two-sided: an AUC well below 0.5 means
+        # the classifier separates the sets with its labels flipped (it happens
+        # when synthetic rows copy real ones, as each duplicate's twin carries
+        # the opposite label), which is as detectable as an AUC well above 0.5.
+        # Fold the fold-averaged AUC so "minimize" never rewards it.
+        auc = float(self.reduction()(res))
+        results = {self._reduction: max(auc, 1 - auc)}
         log.info(
             f" Synthetic-real data discrimination using {self.name()}. AUCROC : {results}"
         )
