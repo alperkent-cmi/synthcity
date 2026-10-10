@@ -65,30 +65,36 @@ class AttackEvaluator(MetricEvaluator):
             target = X_syn[col]
             keys_data = X_syn.drop(columns=[col])
 
-            if is_discrete(col, target, 14):
-                task_type = "classification"
-                encoder = LabelEncoder()
-                target = encoder.fit_transform(target)
-                if "n_units_out" in classifier_args:
-                    classifier_args["n_units_out"] = len(np.unique(target))
-                model = classifier_template(**classifier_args)
-            else:
-                task_type = "regression"
-                model = regressor_template(**regressor_args)
+            # The score is the share of real rows whose secret the attacker
+            # predicts exactly. That is only meaningful for a categorical
+            # secret: for a continuous one an exact match almost never happens,
+            # so the score was ~0 for every generator and diluted the mean.
+            # Continuous secrets are skipped; attacks with a holdout control
+            # (e.g. Anonymeter inference) cover them.
+            if not is_discrete(col, target, 14):
+                continue
 
+            encoder = LabelEncoder()
+            target = encoder.fit_transform(target)
+            if "n_units_out" in classifier_args:
+                classifier_args["n_units_out"] = len(np.unique(target))
+            model = classifier_template(**classifier_args)
             model.fit(keys_data.values, np.asarray(target))
 
-            test_target = X_gt[col]
-            if task_type == "classification":
-                test_target = encoder.transform(test_target)
+            # A real category the synthetic data never produced cannot be
+            # predicted: code it -1 (always wrong) instead of letting
+            # LabelEncoder raise, which failed the metric for exactly the
+            # generator that dropped a category.
+            test_values = np.asarray(X_gt[col])
+            known = np.isin(test_values, encoder.classes_)
+            test_target = np.full(len(test_values), -1)
+            test_target[known] = encoder.transform(test_values[known])
 
             test_keys_data = X_gt.drop(columns=[col])
 
             preds = model.predict(test_keys_data.values)
 
-            output.append(
-                (np.asarray(preds) == np.asarray(test_target)).sum() / (len(preds) + 1)
-            )
+            output.append(float((np.asarray(preds).ravel() == test_target).mean()))
 
         if len(output) == 0:
             return {}
