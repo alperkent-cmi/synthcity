@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Tuple
 import numpy as np
 import pandas as pd
 import torch
+from torch import nn
 from pydantic import validate_arguments
 from scipy.stats import kendalltau, spearmanr
 from sklearn.linear_model import LinearRegression, LogisticRegression
@@ -42,6 +43,24 @@ from synthcity.plugins.core.models.time_series_survival.ts_surv_xgb import (
 )
 from synthcity.plugins.core.models.ts_model import TimeSeriesModel
 from synthcity.utils.serialization import load_from_file, save_to_file
+
+
+def _fit_balanced(estimator: Any, X: np.ndarray, y: np.ndarray) -> Any:
+    """Fit a classifier with every class weighted by the inverse of its frequency.
+
+    Weights are scikit-learn's ``"balanced"`` (``n / (k * count)``), so each class
+    contributes equally to the loss. scikit-learn and XGBoost estimators take them
+    as ``sample_weight``; the MLP takes them as class weights of its cross-entropy.
+    """
+    from sklearn.utils.class_weight import compute_class_weight, compute_sample_weight
+
+    if isinstance(estimator, MLP):
+        weight = compute_class_weight("balanced", classes=np.unique(y), y=y)
+        estimator.loss = nn.CrossEntropyLoss(
+            weight=torch.as_tensor(weight, dtype=torch.float32, device=estimator.device)
+        )
+        return estimator.fit(X, y)
+    return estimator.fit(X, y, sample_weight=compute_sample_weight("balanced", y))
 
 
 class PerformanceEvaluator(MetricEvaluator):
@@ -84,6 +103,10 @@ class PerformanceEvaluator(MetricEvaluator):
         Returns: AUCROC.
             1 means perfect predictions.
             0 means only incorrect predictions.
+
+        The classifier weights each class by the inverse of its frequency
+        (see ``_fit_balanced``), so an imbalanced target does not reduce it to
+        the majority class.
         """
         labels = list(y_train) + list(y_test)
 
@@ -107,7 +130,7 @@ class PerformanceEvaluator(MetricEvaluator):
             model_args["n_units_out"] = len(np.unique(y_train))
         try:
             enc_y_test = encoder.transform(y_test)
-            estimator = model(**model_args).fit(X_train, enc_y_train)
+            estimator = _fit_balanced(model(**model_args), X_train, enc_y_train)
             y_pred = estimator.predict_proba(X_test)
             score, _ = evaluate_auc(enc_y_test, y_pred)
         except BaseException as e:
