@@ -186,6 +186,46 @@ def test_evaluate_wasserstein_distance(test_plugin: Plugin) -> None:
     assert WassersteinDistance.direction() == "minimize"
 
 
+def test_wasserstein_distance_known_answer() -> None:
+    # For the quadratic cost geomloss uses (|x - y|^2 / 2), translating a
+    # sample by v gives a debiased Sinkhorn divergence of exactly |v|^2 / 2.
+    # Each column spans [0, 1], so the MinMax scaling leaves the shift as is.
+    rng = np.random.default_rng(0)
+    X = rng.uniform(size=(300, 3))
+    X[0], X[1] = 0.0, 1.0
+    shift = np.array([0.1, 0.2, 0.0])
+    real = GenericDataLoader(pd.DataFrame(X, columns=["a", "b", "c"]))
+    syn = GenericDataLoader(pd.DataFrame(X + shift, columns=["a", "b", "c"]))
+
+    score = WassersteinDistance()._evaluate(real, syn)["joint"]
+
+    assert score == pytest.approx((shift**2).sum() / 2, rel=0.02)
+
+
+def test_wasserstein_distance_restores_autograd(monkeypatch: Any) -> None:
+    # third party
+    import torch
+
+    # synthcity absolute
+    import synthcity.metrics.eval_statistical as eval_statistical
+
+    class FailingSolver:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        def __call__(self, *args: Any) -> Any:
+            torch.set_grad_enabled(False)  # what geomloss does mid-loop
+            raise RuntimeError("KeOps failed to compile")
+
+    monkeypatch.setattr(eval_statistical, "SamplesLoss", FailingSolver)
+    X = GenericDataLoader(pd.DataFrame(np.eye(3), columns=["a", "b", "c"]))
+
+    with pytest.raises(RuntimeError):
+        WassersteinDistance()._evaluate(X, X)
+
+    assert torch.is_grad_enabled()
+
+
 @pytest.mark.parametrize("test_plugin", [Plugins().get("ctgan")])
 def test_evaluate_prdc(test_plugin: Plugin) -> None:
     X, y = load_iris(return_X_y=True, as_frame=True)

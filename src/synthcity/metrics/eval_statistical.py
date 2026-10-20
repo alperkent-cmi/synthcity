@@ -406,9 +406,23 @@ class WassersteinDistance(StatisticalEvaluator):
 
         X_ten = torch.from_numpy(X_)
         Xsyn_ten = torch.from_numpy(X_syn_)
-        OT_solver = SamplesLoss(loss="sinkhorn")
+        # backend="tensorized" runs in plain torch. geomloss's "auto" picks the
+        # KeOps "online" backend above 5000x5000 points, which needs a working
+        # CUDA/C++ toolchain at runtime and failed to compile on clusters
+        # without the Python headers. The (n x m) cost matrix of a few
+        # thousand rows fits in memory.
+        OT_solver = SamplesLoss(loss="sinkhorn", backend="tensorized")
 
-        return {"joint": OT_solver(X_ten, Xsyn_ten).cpu().numpy().item()}
+        # geomloss turns autograd off inside its Sinkhorn loop and only turns
+        # it back on when the loop finishes, so an error there left autograd
+        # off for every later metric in the process (alpha_precision,
+        # identifiability, detection_mlp and data_leakage_mlp then failed with
+        # "element 0 of tensors does not require grad").
+        grad_enabled = torch.is_grad_enabled()
+        try:
+            return {"joint": OT_solver(X_ten, Xsyn_ten).cpu().numpy().item()}
+        finally:
+            torch.set_grad_enabled(grad_enabled)
 
 
 class PRDCScore(StatisticalEvaluator):
