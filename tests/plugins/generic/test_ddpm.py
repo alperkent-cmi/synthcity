@@ -175,3 +175,37 @@ def test_eval_performance_ddpm(compress_dataset: bool) -> None:
 
     print(plugin.name(), results)
     assert np.mean(results) > 0.8
+
+
+def test_ddpm_clips_predicted_x0_to_training_range() -> None:
+    # An untrained denoiser predicts garbage noise; with the bounds set, the
+    # last reverse step returns the clipped x_0 prediction, so every numeric
+    # sample lies inside the training range.
+    # third party
+    import torch
+
+    # synthcity absolute
+    from synthcity.plugins.core.models.tabular_ddpm.gaussian_multinomial_diffsuion import (
+        GaussianMultinomialDiffusion,
+    )
+
+    torch.manual_seed(0)
+    diffusion = GaussianMultinomialDiffusion(
+        num_numerical_features=3,
+        num_categorical_features=(2, 4),
+        model_type="mlp",
+        model_params=dict(n_layers_hidden=2, n_units_hidden=32, dropout=0.0),
+        num_timesteps=50,
+    )
+    diffusion.eval()
+    low = torch.tensor([-1.0, -2.0, 0.0])
+    high = torch.tensor([1.0, 0.5, 3.0])
+
+    unclipped = diffusion.sample(500)[:, :3]
+    assert ((unclipped < low) | (unclipped > high)).any()
+
+    diffusion.x_num_bounds = torch.stack([low, high])
+    clipped = diffusion.sample(500)
+    assert ((clipped[:, :3] >= low) & (clipped[:, :3] <= high)).all()
+    assert set(clipped[:, 3].unique().tolist()) <= {0.0, 1.0}
+    assert set(clipped[:, 4].unique().tolist()) <= {0.0, 1.0, 2.0, 3.0}

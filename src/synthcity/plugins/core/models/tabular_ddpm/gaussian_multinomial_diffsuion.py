@@ -227,6 +227,9 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
             sqrt_recipm1_alphas_cumprod.float().to(device),
         )
 
+        # (min, max) of each numeric training feature; set after training.
+        self.x_num_bounds: Optional[Tensor] = None
+
         self.register_buffer("Lt_history", torch.zeros(num_timesteps))
         self.register_buffer("Lt_count", torch.zeros(num_timesteps))
 
@@ -306,6 +309,18 @@ class GaussianMultinomialDiffusion(torch.nn.Module):
             pred_xstart = model_output
         else:
             raise ValueError("unknown gaussian_parametrization. Must be 'eps' or 'x0'")
+
+        # Clip the predicted x_0 to the training range (guided-diffusion's
+        # clip_denoised, with the data's bounds instead of [-1, 1]). The
+        # reference never clips: x_0 = (x_t - sqrt(1 - abar) eps) / sqrt(abar)
+        # multiplies eps errors by up to 1 / sqrt(abar) at large t, and the
+        # reverse chain diverges (samples reach |x| ~ 1e3-1e4 on a quantile-normal
+        # scale). The inverse transform then piles numerics on their min/max
+        # and the categorical denoiser, fed those inputs, collapses.
+        if self.x_num_bounds is not None:
+            pred_xstart = torch.maximum(
+                torch.minimum(pred_xstart, self.x_num_bounds[1]), self.x_num_bounds[0]
+            )
 
         model_mean, _, _ = self.gaussian_q_posterior_mean_variance(
             x_start=pred_xstart, x_t=x, t=t

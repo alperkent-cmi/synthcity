@@ -48,6 +48,7 @@ class TabDDPM(nn.Module, ValidationMixin):
         # early stopping
         n_iter_min: int = 100,
         patience: int = 5,
+        clip_denoised: bool = True,
     ) -> None:
         nn.Module.__init__(self)
         ValidationMixin.__init__(
@@ -59,8 +60,8 @@ class TabDDPM(nn.Module, ValidationMixin):
         self.__dict__.update(locals())
         del self.self
 
-    def _anneal_lr(self, epoch: int) -> None:
-        frac_done = epoch / self.n_iter
+    def _anneal_lr(self, step: int, total_steps: int) -> None:
+        frac_done = step / total_steps
         lr = self.lr * (1 - frac_done)
         for param_group in self.optimizer.param_groups:
             param_group["lr"] = lr
@@ -149,6 +150,7 @@ class TabDDPM(nn.Module, ValidationMixin):
         self.val_history = []
 
         steps = 0
+        total_steps = self.n_iter * len(self.dataloader)
         curr_loss_multi = 0.0
         curr_loss_gauss = 0.0
         curr_count = 0
@@ -166,7 +168,8 @@ class TabDDPM(nn.Module, ValidationMixin):
                 loss.backward()
                 self.optimizer.step()
 
-                self._anneal_lr(epoch + 1)
+                # Linear decay per optimizer step, as the reference trainer does.
+                self._anneal_lr(steps, total_steps)
 
                 curr_count += len(x)
                 curr_loss_multi += loss_multi.item() * len(x)
@@ -203,6 +206,12 @@ class TabDDPM(nn.Module, ValidationMixin):
         self.loss_history = pd.DataFrame(
             self.loss_history, columns=["step", "mloss", "gloss", "loss"]
         ).set_index("step")
+
+        if self.clip_denoised and self.diffusion.num_numerics > 0:
+            x_num = dataset.tensors[0][:, : self.diffusion.num_numerics]
+            self.diffusion.x_num_bounds = torch.stack(
+                [x_num.min(dim=0).values, x_num.max(dim=0).values]
+            )
 
         self.on_fit_end()
 

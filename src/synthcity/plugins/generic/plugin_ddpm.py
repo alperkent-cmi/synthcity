@@ -74,6 +74,10 @@ class TabDDPMPlugin(Plugin):
             Number of iterations between printing.
         dim_embed: int = 128
             Dimensionality of the embedding space.
+        clip_denoised: bool = True
+            Clip the predicted clean numeric features to their training range at
+            every sampling step. The reference does not; without it the reverse
+            chain can diverge (see GaussianMultinomialDiffusion.gaussian_p_mean_variance).
         random_state: int
             random seed to use
         workspace: Path.
@@ -114,6 +118,7 @@ class TabDDPMPlugin(Plugin):
         n_layers_hidden: Optional[int] = None,
         n_units_hidden: Optional[int] = None,
         dim_embed: int = 128,
+        clip_denoised: bool = True,
         continuous_encoder: str = "quantile",
         cont_encoder_params: dict = {},
         validation_size: float = 0,
@@ -165,6 +170,7 @@ class TabDDPMPlugin(Plugin):
             model_type=model_type,
             model_params=model_params,
             dim_embed=dim_embed,
+            clip_denoised=clip_denoised,
             valid_size=validation_size,
             valid_metric=validation_metric,
         )
