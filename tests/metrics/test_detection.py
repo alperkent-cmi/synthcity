@@ -58,6 +58,27 @@ def test_detect_reduction(reduction: str, evaluator_t: Type) -> None:
     assert def_score == score[reduction]
 
 
+def test_detect_xgb_uses_max_depth_3(monkeypatch: pytest.MonkeyPatch) -> None:
+    # synthcity absolute
+    from synthcity.metrics import eval_detection
+
+    seen = {}
+    real_xgb = eval_detection.XGBClassifier
+
+    def spy(**kwargs):  # type: ignore
+        seen.update(kwargs)
+        return real_xgb(**kwargs)
+
+    monkeypatch.setattr(eval_detection, "XGBClassifier", spy)
+    X, y = load_iris(return_X_y=True, as_frame=True)
+    X["target"] = y
+    Xloader = GenericDataLoader(X)
+    SyntheticDetectionXGB(use_cache=False).evaluate(Xloader, Xloader)
+
+    assert seen["max_depth"] == 3
+    assert "depth" not in seen
+
+
 @pytest.mark.parametrize("test_plugin", [Plugins().get("marginal_distributions")])
 @pytest.mark.parametrize(
     "evaluator_t",
