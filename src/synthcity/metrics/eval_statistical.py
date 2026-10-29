@@ -22,11 +22,26 @@ import synthcity.logger as log
 from synthcity.metrics._utils import get_frequency
 from synthcity.metrics.core import MetricEvaluator
 from synthcity.plugins.core.dataloader import DataLoader
+from synthcity.utils.dataframe import is_discrete
 from synthcity.plugins.core.models.survival_analysis.metrics import (
     nonparametric_distance,
 )
 from synthcity.utils.reproducibility import clear_cache
 from synthcity.utils.serialization import load_from_file, save_to_file
+
+
+def _median_heuristic_gamma(X: np.ndarray, max_rows: int = 2000) -> float:
+    """RBF ``gamma`` for sklearn's exp(-gamma * d^2) with the bandwidth set to the
+    median pairwise distance (sigma), gamma = 1 / (2 sigma^2). Uses a fixed
+    subsample of at most ``max_rows`` rows on large data."""
+    if len(X) > max_rows:
+        X = X[np.random.default_rng(0).choice(len(X), max_rows, replace=False)]
+    d2 = metrics.pairwise.euclidean_distances(X, squared=True)
+    d2 = d2[np.triu_indices_from(d2, k=1)]
+    d2 = d2[d2 > 0]
+    if len(d2) == 0:
+        return 1.0
+    return float(1.0 / np.median(d2))  # 1 / (2 sigma^2) with sigma^2 = median(d^2) / 2
 
 
 class StatisticalEvaluator(MetricEvaluator):
@@ -245,22 +260,22 @@ class MaximumMeanDiscrepancy(StatisticalEvaluator):
             """
             MMD using rbf (gaussian) kernel (i.e., k(x,y) = exp(-gamma * ||x-y||^2 / 2))
             """
-            gamma = 1.0
-            XX = metrics.pairwise.rbf_kernel(
-                X_gt.numpy().reshape(len(X_gt), -1),
-                X_gt.numpy().reshape(len(X_gt), -1),
-                gamma,
-            )
-            YY = metrics.pairwise.rbf_kernel(
-                X_syn.numpy().reshape(len(X_syn), -1),
-                X_syn.numpy().reshape(len(X_syn), -1),
-                gamma,
-            )
-            XY = metrics.pairwise.rbf_kernel(
-                X_gt.numpy().reshape(len(X_gt), -1),
-                X_syn.numpy().reshape(len(X_syn), -1),
-                gamma,
-            )
+            # Upstream used gamma = 1 on unscaled columns. On wide data every
+            # pair of distinct rows is then many units apart, the kernel is ~0
+            # off the diagonal, and the score is ~2/n for any independent
+            # draw (shifted or not) and 0 only for a copy of the real rows.
+            # Columns are min-max scaled on the real data, as in
+            # WassersteinDistance, and the bandwidth is the median distance
+            # between pooled points (Gretton et al. 2012, section 8).
+            X_ = X_gt.numpy().reshape(len(X_gt), -1).astype(float)
+            Y_ = X_syn.numpy().reshape(len(X_syn), -1).astype(float)
+            scaler = MinMaxScaler().fit(X_)
+            X_ = scaler.transform(X_)
+            Y_ = scaler.transform(Y_)
+            gamma = _median_heuristic_gamma(np.concatenate([X_, Y_]))
+            XX = metrics.pairwise.rbf_kernel(X_, X_, gamma)
+            YY = metrics.pairwise.rbf_kernel(Y_, Y_, gamma)
+            XY = metrics.pairwise.rbf_kernel(X_, Y_, gamma)
             score = XX.mean() + YY.mean() - 2 * XY.mean()
         elif self.kernel == "polynomial":
             """
@@ -325,9 +340,16 @@ class JensenShannonDistance(StatisticalEvaluator):
         stats_ = {}
 
         for col in X_gt.columns:
-            local_bins = min(self._n_histogram_bins, len(X_gt[col].unique()))
-            X_gt_bin, gt_bins = pd.cut(X_gt[col], bins=local_bins, retbins=True)
-            X_syn_bin = pd.cut(X_syn[col], bins=gt_bins)
+            if is_discrete(col, X_gt[col], 4):
+                # One bin per category. Equal-width bins over the label codes
+                # merged neighbouring codes of a nominal column with more than
+                # n_histogram_bins levels, so a swap between merged categories
+                # was invisible and the result depended on the code order.
+                X_gt_bin, X_syn_bin = X_gt[col], X_syn[col]
+            else:
+                local_bins = min(self._n_histogram_bins, len(X_gt[col].unique()))
+                X_gt_bin, gt_bins = pd.cut(X_gt[col], bins=local_bins, retbins=True)
+                X_syn_bin = pd.cut(X_syn[col], bins=gt_bins)
             stats_gt[col], stats_syn[col] = X_gt_bin.value_counts(
                 dropna=False, normalize=self.normalize
             ).align(
@@ -456,8 +478,15 @@ class PRDCScore(StatisticalEvaluator):
         X: DataLoader,
         X_syn: DataLoader,
     ) -> Dict:
-        X_ = X.numpy().reshape(len(X), -1)
-        X_syn_ = X_syn.numpy().reshape(len(X_syn), -1)
+        X_ = X.numpy().reshape(len(X), -1).astype(float)
+        X_syn_ = X_syn.numpy().reshape(len(X_syn), -1).astype(float)
+        # Nearest-neighbour radii on unscaled columns only see the widest
+        # columns: shifting a 0-1 column or swapping category shares left
+        # every PRDC score unchanged. Scale on the real data, as for the
+        # Wasserstein distance.
+        scaler = MinMaxScaler().fit(X_)
+        X_ = scaler.transform(X_)
+        X_syn_ = scaler.transform(X_syn_)
 
         # Default representation
         results = self._compute_prdc(X_, X_syn_)

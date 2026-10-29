@@ -12,11 +12,8 @@ from pydantic import validate_arguments
 from scipy.stats import multivariate_normal
 from sklearn.metrics import (
     accuracy_score,
-    auc,
     average_precision_score,
-    precision_recall_curve,
     roc_auc_score,
-    roc_curve,
 )
 from sklearn.preprocessing import MinMaxScaler, label_binarize
 from torch import nn
@@ -111,33 +108,22 @@ def evaluate_auc(
     y_pred_proba_tmp = get_y_pred_proba_hlpr(y_pred_proba, n_classes)
 
     if n_classes > 2:
-        fpr = dict()
-        tpr = dict()
-        precision = dict()
-        recall = dict()
-        average_precision = dict()
-        roc_auc: dict = dict()
-
         if classes is None:
             classes = sorted(set(np.ravel(y_test)))
 
         y_test = label_binarize(y_test, classes=classes)
 
-        fpr["micro"], tpr["micro"], _ = roc_curve(
-            y_test.ravel(), y_pred_proba_tmp.ravel()
+        # Macro (one-vs-rest, each class weighted equally), as every other
+        # classifier score in the pipeline. Upstream pooled all classes
+        # (micro), so the majority class dominated the score. A class absent
+        # from this test fold has no AUC and is left out of the average.
+        present = y_test.sum(axis=0) > 0
+        aucroc = roc_auc_score(
+            y_test[:, present], y_pred_proba_tmp[:, present], average="macro"
         )
-        roc_auc["micro"] = auc(fpr["micro"], tpr["micro"])
-
-        precision["micro"], recall["micro"], _ = precision_recall_curve(
-            y_test.ravel(), y_pred_proba_tmp.ravel()
+        aucprc = average_precision_score(
+            y_test[:, present], y_pred_proba_tmp[:, present], average="macro"
         )
-
-        average_precision["micro"] = average_precision_score(
-            y_test, y_pred_proba_tmp, average="micro"
-        )
-
-        aucroc = roc_auc["micro"]
-        aucprc = average_precision["micro"]
     else:
         aucroc = roc_auc_score(np.ravel(y_test), y_pred_proba_tmp, multi_class="ovr")
         aucprc = average_precision_score(np.ravel(y_test), y_pred_proba_tmp)
