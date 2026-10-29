@@ -701,10 +701,12 @@ class PerformanceEvaluatorXGB(PerformanceEvaluator):
             else:
                 model = XGBRegressor
 
+            # XGBClassifier/XGBRegressor have no `depth` argument and ignored
+            # it, so upstream's trees grew to the default depth 6.
             model_args = {
                 "n_jobs": 2,
                 "verbosity": 0,
-                "depth": 3,
+                "max_depth": 3,
                 "random_state": self._random_state,
             }
 
